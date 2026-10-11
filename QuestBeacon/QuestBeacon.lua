@@ -98,9 +98,19 @@ end
 ---------------------------------------------------------------------------
 -- Quest log helpers
 ---------------------------------------------------------------------------
+local recentCompleted = {}
+
 local function InLog(qid)
+    if QuestiePlayer and QuestiePlayer.currentQuestlog and QuestiePlayer.currentQuestlog[qid] then
+        return true
+    end
+    local QLC = QuestieLoader and QuestieLoader.ImportModule and QuestieLoader:ImportModule("QuestLogCache")
+    if QLC and QLC.questLog_DO_NOT_MODIFY and QLC.questLog_DO_NOT_MODIFY[qid] then
+        return true
+    end
     if C_QuestLog and C_QuestLog.GetLogIndexForQuestID then
-        return C_QuestLog.GetLogIndexForQuestID(qid) ~= nil
+        local idx = C_QuestLog.GetLogIndexForQuestID(qid)
+        return idx ~= nil and idx > 0
     elseif GetQuestLogIndexByID then
         local i = GetQuestLogIndexByID(qid)
         return i ~= nil and i > 0
@@ -109,6 +119,11 @@ local function InLog(qid)
 end
 
 local function IsReadyToTurnIn(qid)
+    local Q = GetQuestie()
+    if Q and type(Q.IsComplete) == "function" then
+        local ok, comp = pcall(Q.IsComplete, qid)
+        if ok and comp == 1 then return true end
+    end
     if C_QuestLog then
         if C_QuestLog.ReadyForTurnIn and C_QuestLog.ReadyForTurnIn(qid) then return true end
         if C_QuestLog.IsComplete and C_QuestLog.IsComplete(qid) then return true end
@@ -124,6 +139,12 @@ local function IsReadyToTurnIn(qid)
 end
 
 local function IsFlaggedCompleted(qid)
+    if recentCompleted[qid] then
+        return true
+    end
+    if Questie and Questie.db and Questie.db.char and Questie.db.char.complete and Questie.db.char.complete[qid] then
+        return true
+    end
     if C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then
         return C_QuestLog.IsQuestFlaggedCompleted(qid)
     elseif IsQuestFlaggedCompleted then
@@ -417,12 +438,43 @@ function handlers.NAME_PLATE_UNIT_REMOVED(unit)
     end
 end
 
-handlers.QUEST_LOG_UPDATE = QueueRefresh
-handlers.QUEST_ACCEPTED = QueueRefresh
-handlers.QUEST_TURNED_IN = QueueRefresh
-handlers.QUEST_REMOVED = QueueRefresh
-handlers.PLAYER_LEVEL_UP = QueueRefresh
-handlers.UNIT_QUEST_LOG_CHANGED = QueueRefresh
+function handlers.QUEST_TURNED_IN(questId)
+    if type(questId) == "number" and questId > 0 then
+        recentCompleted[questId] = true
+    end
+    QueueRefresh()
+end
+
+function handlers.QUEST_ACCEPTED(questLogIndex, questId)
+    -- On Classic, questLogIndex is arg1, questId is arg2.
+    -- On Forever/Retail, questId might be arg1.
+    local qid = (type(questId) == "number" and questId > 0) and questId or (type(questLogIndex) == "number" and questLogIndex > 0 and questLogIndex)
+    if qid and recentCompleted[qid] then
+        recentCompleted[qid] = nil
+    end
+    QueueRefresh()
+end
+
+function handlers.QUEST_REMOVED(questId)
+    QueueRefresh()
+end
+
+function handlers.QUEST_LOG_UPDATE()
+    QueueRefresh()
+end
+
+function handlers.QUEST_WATCH_UPDATE(questId)
+    QueueRefresh()
+end
+
+function handlers.UNIT_QUEST_LOG_CHANGED(unit)
+    QueueRefresh()
+end
+
+function handlers.PLAYER_LEVEL_UP()
+    QueueRefresh()
+end
+
 handlers.GOSSIP_SHOW = LearnGossip
 handlers.QUEST_GREETING = LearnGreeting
 function handlers.QUEST_DETAIL() Learn("s", GetQuestID()) end
@@ -432,7 +484,10 @@ function handlers.QUEST_COMPLETE() Learn("e", GetQuestID()) end
 for event in pairs(handlers) do
     pcall(frame.RegisterEvent, frame, event) -- tolerate events missing on this client
 end
-frame:SetScript("OnEvent", function(_, event, ...) handlers[event](...) end)
+frame:SetScript("OnEvent", function(_, event, ...)
+    local h = handlers[event]
+    if h then h(...) end
+end)
 
 -- Periodic full refresh. Catches status that was computed before Questie finished loading
 -- the character's quest history, and re-asserts plate hiding if Blizzard resets alpha.
