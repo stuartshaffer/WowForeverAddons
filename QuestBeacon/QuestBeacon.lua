@@ -96,6 +96,59 @@ local function RestoreCVars()
 end
 
 ---------------------------------------------------------------------------
+-- Questie integration (optional)
+---------------------------------------------------------------------------
+local QuestieDB
+
+local function GetQuestie()
+    if not db or not db.useQuestie then return nil end
+    if QuestieDB then return QuestieDB end
+    if QuestieLoader and QuestieLoader.ImportModule then
+        local ok, mod = pcall(QuestieLoader.ImportModule, QuestieLoader, "QuestieDB")
+        -- QueryNPCSingle only exists after Questie finished building its DB.
+        if ok and type(mod) == "table" and type(mod.QueryNPCSingle) == "function" then
+            QuestieDB = mod
+        end
+    end
+    return QuestieDB
+end
+
+local function QuestieList(Q, npcID, field, into)
+    local ok, list = pcall(Q.QueryNPCSingle, npcID, field)
+    if ok and type(list) == "table" then
+        for _, qid in pairs(list) do
+            if type(qid) == "number" then into[qid] = true end
+        end
+    end
+end
+
+local function QuestieDoable(Q, qid)
+    if type(Q.IsDoable) ~= "function" then return true end
+    local ok, res = pcall(Q.IsDoable, qid)
+    if ok and type(res) == "boolean" then return res end
+    return true
+end
+
+local function QuestieLevel(Q, qid)
+    if not Q or type(Q.QueryQuestSingle) ~= "function" then return nil end
+    local ok, lvl = pcall(Q.QueryQuestSingle, qid, "questLevel")
+    if ok and type(lvl) == "number" then return lvl end
+end
+
+-- QuestieDB.IsDoable doesn't check the minimum level, so do it here.
+local function QuestieTooLow(Q, qid)
+    if not Q or type(Q.QueryQuestSingle) ~= "function" then return false end
+    local ok, req = pcall(Q.QueryQuestSingle, qid, "requiredLevel")
+    return ok and type(req) == "number" and req > UnitLevel("player")
+end
+
+local function QuestieWhy(Q, qid)
+    if not Q or type(Q.IsDoableVerbose) ~= "function" then return nil end
+    local ok, txt = pcall(Q.IsDoableVerbose, qid, false, true, true)
+    if ok and type(txt) == "string" then return (txt:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("\n", " ")) end
+end
+
+---------------------------------------------------------------------------
 -- Quest log helpers
 ---------------------------------------------------------------------------
 local recentCompleted = {}
@@ -161,59 +214,6 @@ local function IsTrivialLevel(questLevel)
         if ok and type(r) == "number" then greenRange = r end
     end
     return (UnitLevel("player") - questLevel) > greenRange
-end
-
----------------------------------------------------------------------------
--- Questie integration (optional)
----------------------------------------------------------------------------
-local QuestieDB
-
-local function GetQuestie()
-    if not db.useQuestie then return nil end
-    if QuestieDB then return QuestieDB end
-    if QuestieLoader and QuestieLoader.ImportModule then
-        local ok, mod = pcall(QuestieLoader.ImportModule, QuestieLoader, "QuestieDB")
-        -- QueryNPCSingle only exists after Questie finished building its DB.
-        if ok and type(mod) == "table" and type(mod.QueryNPCSingle) == "function" then
-            QuestieDB = mod
-        end
-    end
-    return QuestieDB
-end
-
-local function QuestieList(Q, npcID, field, into)
-    local ok, list = pcall(Q.QueryNPCSingle, npcID, field)
-    if ok and type(list) == "table" then
-        for _, qid in pairs(list) do
-            if type(qid) == "number" then into[qid] = true end
-        end
-    end
-end
-
-local function QuestieDoable(Q, qid)
-    if type(Q.IsDoable) ~= "function" then return true end
-    local ok, res = pcall(Q.IsDoable, qid)
-    if ok and type(res) == "boolean" then return res end
-    return true
-end
-
-local function QuestieLevel(Q, qid)
-    if not Q or type(Q.QueryQuestSingle) ~= "function" then return nil end
-    local ok, lvl = pcall(Q.QueryQuestSingle, qid, "questLevel")
-    if ok and type(lvl) == "number" then return lvl end
-end
-
--- QuestieDB.IsDoable doesn't check the minimum level, so do it here.
-local function QuestieTooLow(Q, qid)
-    if not Q or type(Q.QueryQuestSingle) ~= "function" then return false end
-    local ok, req = pcall(Q.QueryQuestSingle, qid, "requiredLevel")
-    return ok and type(req) == "number" and req > UnitLevel("player")
-end
-
-local function QuestieWhy(Q, qid)
-    if not Q or type(Q.IsDoableVerbose) ~= "function" then return nil end
-    local ok, txt = pcall(Q.IsDoableVerbose, qid, false, true, true)
-    if ok and type(txt) == "string" then return (txt:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("\n", " ")) end
 end
 
 ---------------------------------------------------------------------------
