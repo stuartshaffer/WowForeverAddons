@@ -28,13 +28,16 @@ local DEFAULTS = {
     showTrivial = false,       -- "!" for grey (low level) quests
     useQuestie = true,
     manageCVars = true,
+    occludedOnly = true,       -- auto-hide beacon icon when in direct line of sight (avoids double !)
 }
 
 -- CVars we set so nameplates work as "through-wall" markers.
+-- When occludedOnly is enabled, nameplateOccludedAlphaMult is set to 0.4 so the client
+-- signals occlusion via plate:GetAlpha() < 0.99.
 local MANAGED_CVARS = {
     nameplateShowAll = "1",          -- show nameplates out of combat
     nameplateShowFriendlyNPCs = "1", -- show nameplates for friendly NPCs
-    nameplateOccludedAlphaMult = "1",-- don't fade plates behind walls
+    nameplateOccludedAlphaMult = "0.4", -- lowered to allow occlusion detection (plate alpha drops behind walls)
 }
 local MIN_MAX_DISTANCE = 41          -- raise nameplateMaxDistance to at least this
 
@@ -75,10 +78,14 @@ local function ApplyCVars()
     if InCombatLockdown() then pendingCVars = true return end
     db.savedCVars = db.savedCVars or {}
     for name, value in pairs(MANAGED_CVARS) do
+        local targetValue = value
+        if name == "nameplateOccludedAlphaMult" then
+            targetValue = db.occludedOnly and "0.4" or "1"
+        end
         local cur = GetCV(name)
         if cur ~= nil then
             if db.savedCVars[name] == nil then db.savedCVars[name] = cur end
-            if cur ~= value then SetCV(name, value) end
+            if cur ~= targetValue then SetCV(name, targetValue) end
         end
     end
     local dist = tonumber(GetCV("nameplateMaxDistance"))
@@ -272,6 +279,13 @@ local ICON_STYLES = {
     [STATUS_INCOMPLETE] = { atlas = "QuestTurnin",  file = "Interface\\GossipFrame\\ActiveQuestIcon", grey = true },
 }
 
+local function IsPlateOccluded(plate)
+    -- When nameplateOccludedAlphaMult < 1 (e.g. 0.4), Blizzard automatically reduces
+    -- plate:GetAlpha() when the nameplate is obstructed/behind a wall or obstacle.
+    local a = plate:GetAlpha()
+    return a < 0.95
+end
+
 local function GetIcon(plate)
     local icon = icons[plate]
     if icon then return icon end
@@ -281,6 +295,25 @@ local function GetIcon(plate)
     icon.tex = icon:CreateTexture(nil, "OVERLAY")
     icon.tex:SetAllPoints()
     icons[plate] = icon
+
+    -- Dynamically show/hide based on line-of-sight occlusion
+    icon:SetScript("OnUpdate", function(self)
+        if not db or not db.enabled or self.status == STATUS_NONE then
+            if self:IsShown() then self:Hide() end
+            return
+        end
+        if db.occludedOnly then
+            local occluded = IsPlateOccluded(plate)
+            if occluded and not self:IsShown() then
+                self:Show()
+            elseif not occluded and self:IsShown() then
+                self:Hide()
+            end
+        else
+            if not self:IsShown() then self:Show() end
+        end
+    end)
+
     return icon
 end
 
@@ -333,8 +366,13 @@ local function UpdateUnit(unit, cache)
     if status ~= STATUS_NONE then
         local icon = GetIcon(plate)
         StyleIcon(icon, status)
-        icon:Show()
+        if db.occludedOnly then
+            if IsPlateOccluded(plate) then icon:Show() else icon:Hide() end
+        else
+            icon:Show()
+        end
     elseif icons[plate] then
+        icons[plate].status = STATUS_NONE
         icons[plate]:Hide()
     end
 
@@ -501,8 +539,8 @@ end)
 local function OnOff(v) return v and "|cff00ff00on|r" or "|cffff4040off|r" end
 
 local function PrintStatus()
-    Print(("enabled %s | size %d | offset %d | hide plates %s | grey ? %s | trivial %s | questie %s (%s) | cvars %s"):format(
-        OnOff(db.enabled), db.iconSize, db.yOffset, OnOff(db.hideFriendlyPlates), OnOff(db.showIncomplete),
+    Print(("enabled %s | size %d | offset %d | hide plates %s | auto-hide LOS %s | grey ? %s | trivial %s | questie %s (%s) | cvars %s"):format(
+        OnOff(db.enabled), db.iconSize, db.yOffset, OnOff(db.hideFriendlyPlates), OnOff(db.occludedOnly), OnOff(db.showIncomplete),
         OnOff(db.showTrivial), OnOff(db.useQuestie), GetQuestie() and "found" or "not found", OnOff(db.manageCVars)))
     local n = 0
     for _ in pairs(learned) do n = n + 1 end
@@ -512,6 +550,7 @@ end
 local function PrintHelp()
     Print("commands:")
     print("  /qb toggle - enable/disable")
+    print("  /qb autohide - toggle auto-hiding icon when in direct line of sight (avoids double !)")
     print("  /qb size <n> - icon size (default 30)")
     print("  /qb offset <n> - vertical offset (default 6)")
     print("  /qb plates - toggle hiding regular friendly NPC nameplates")
@@ -529,8 +568,8 @@ local function DebugTarget()
     local function add(s) out[#out + 1] = s end
     local function yn(v) return v and "Y" or "n" end
 
-    add(("QuestBeacon debug | enabled=%s hidePlates=%s questie=%s"):format(
-        yn(db.enabled), yn(db.hideFriendlyPlates), GetQuestie() and "found" or "NOT found"))
+    add(("QuestBeacon debug | enabled=%s hidePlates=%s autohide=%s questie=%s"):format(
+        yn(db.enabled), yn(db.hideFriendlyPlates), yn(db.occludedOnly), GetQuestie() and "found" or "NOT found"))
     local cv = {}
     for name in pairs(MANAGED_CVARS) do cv[#cv + 1] = name .. "=" .. tostring(GetCV(name)) end
     cv[#cv + 1] = "nameplateMaxDistance=" .. tostring(GetCV("nameplateMaxDistance"))
@@ -579,8 +618,10 @@ local function DebugTarget()
 
     local plate = C_NamePlate.GetNamePlateForUnit("target")
     local icon = plate and icons[plate]
-    add(("plate=%s icon=%s shown=%s hiddenUF=%s"):format(tostring(plate ~= nil), tostring(icon ~= nil),
-        tostring(icon and icon:IsShown()), tostring(plate and hidden[plate] or false)))
+    local plateAlpha = plate and plate:GetAlpha() or nil
+    add(("plate=%s alpha=%s occluded=%s icon=%s shown=%s hiddenUF=%s"):format(
+        tostring(plate ~= nil), tostring(plateAlpha), tostring(plate and IsPlateOccluded(plate) or false),
+        tostring(icon ~= nil), tostring(icon and icon:IsShown()), tostring(plate and hidden[plate] or false)))
     return out
 end
 
@@ -640,6 +681,10 @@ SlashCmdList.QUESTBEACON = function(msg)
         db.enabled = not db.enabled
         if db.enabled then ApplyCVars() end
         Print("enabled " .. OnOff(db.enabled))
+    elseif cmd == "autohide" or cmd == "los" or cmd == "occluded" then
+        db.occludedOnly = not db.occludedOnly
+        ApplyCVars()
+        Print("auto-hide in line of sight " .. OnOff(db.occludedOnly))
     elseif cmd == "size" and tonumber(arg) then
         db.iconSize = math.max(8, math.min(128, tonumber(arg)))
     elseif cmd == "offset" and tonumber(arg) then
