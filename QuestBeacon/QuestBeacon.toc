@@ -1,0 +1,10 @@
+## Interface: 16001
+## AllowLoadGameType: standard, camelot
+## Title: QuestBeacon
+## Notes: Shows quest "!" and "?" icons on NPC nameplates, visible through walls.
+## Author: jssha
+## Version: 0.1.0
+## SavedVariables: QuestBeaconDB, QuestBeaconLearned
+## OptionalDeps: Questie
+
+QuestBeacon.lua
