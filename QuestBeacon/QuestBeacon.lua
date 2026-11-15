@@ -578,9 +578,13 @@ end
 
 local function EnsureQuestLogSortButton()
     if sortCheckButton or not QuestScrollFrame then return end
-    local btn = CreateFrame("CheckButton", "QuestBeaconSortCheckButton", QuestScrollFrame, "UICheckButtonTemplate")
+    local parent = (QuestMapFrame and QuestMapFrame.QuestsFrame)
+        or (QuestScrollFrame.GetParent and QuestScrollFrame:GetParent())
+        or QuestScrollFrame
+    local btn = CreateFrame("CheckButton", "QuestBeaconSortCheckButton", parent, "UICheckButtonTemplate")
     btn:SetSize(22, 22)
-    btn:SetPoint("TOPRIGHT", QuestScrollFrame, "TOPRIGHT", -2, 24)
+    btn:SetFrameLevel(parent:GetFrameLevel() + 15)
+    btn:SetPoint("TOPRIGHT", QuestScrollFrame, "TOPRIGHT", -28, 24)
     btn:SetChecked(db and db.sortQuestLog and true or false)
 
     local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -605,6 +609,7 @@ local function EnsureQuestLogSortButton()
     sortCheckButton = btn
 end
 
+local mapShowHooked = false
 local function SetupQuestLogSort()
     if not questLogHooked and type(QuestLogQuests_Update) == "function" and QuestScrollFrame then
         hooksecurefunc("QuestLogQuests_Update", SortQuestScrollFrame)
@@ -612,6 +617,19 @@ local function SetupQuestLogSort()
     end
     if questLogHooked then
         EnsureQuestLogSortButton()
+    end
+    if not mapShowHooked then
+        local mapPanel = (QuestMapFrame and QuestMapFrame.QuestsFrame) or QuestMapFrame or WorldMapFrame
+        if mapPanel and mapPanel.HookScript then
+            mapPanel:HookScript("OnShow", function()
+                SetupQuestLogSort()
+                if sortCheckButton and db then
+                    sortCheckButton:SetChecked(db.sortQuestLog and true or false)
+                end
+                C_Timer.After(0, SortQuestScrollFrame)
+            end)
+            mapShowHooked = true
+        end
     end
 end
 
