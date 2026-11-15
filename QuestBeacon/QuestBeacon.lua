@@ -29,6 +29,7 @@ local DEFAULTS = {
     useQuestie = true,
     manageCVars = true,
     occludedOnly = true,       -- auto-hide beacon icon when in direct line of sight (avoids double !)
+    sortQuestLog = true,       -- sort completed quests to the top in the main quest log
 }
 
 -- CVars we set so nameplates work as "through-wall" markers.
@@ -435,23 +436,209 @@ local function LearnGreeting()
 end
 
 ---------------------------------------------------------------------------
+-- Quest log sorting (main quest log / QuestScrollFrame)
+---------------------------------------------------------------------------
+local questLogHooked = false
+local sortingQuestLog = false
+local sortCheckButton
+
+local function IsQuestEntryCompleted(titleFrame)
+    local qid = titleFrame and titleFrame.questID
+    if not qid and titleFrame and titleFrame.questLogIndex and C_QuestLog and C_QuestLog.GetQuestIDForLogIndex then
+        qid = C_QuestLog.GetQuestIDForLogIndex(titleFrame.questLogIndex)
+    end
+    if not qid or qid <= 0 then return false end
+    return IsReadyToTurnIn(qid)
+end
+
+local function CollectActivePool(pool, into)
+    if pool and pool.EnumerateActive then
+        for f in pool:EnumerateActive() do
+            into[f] = true
+        end
+    end
+end
+
+local function SortQuestScrollFrame()
+    if sortingQuestLog or not db or not db.sortQuestLog then return end
+    if not QuestScrollFrame or not QuestScrollFrame.Contents then return end
+    local contents = QuestScrollFrame.Contents
+    if not contents.GetLayoutChildren or not contents.Layout then return end
+
+    sortingQuestLog = true
+    local ok, err = pcall(function()
+        local isTitle, isObj, isHeader = {}, {}, {}
+        CollectActivePool(QuestScrollFrame.titleFramePool, isTitle)
+        CollectActivePool(QuestScrollFrame.objectiveFramePool, isObj)
+        CollectActivePool(QuestScrollFrame.headerFramePool, isHeader)
+        CollectActivePool(QuestScrollFrame.campaignHeaderFramePool, isHeader)
+        CollectActivePool(QuestScrollFrame.covenantCallingsHeaderFramePool, isHeader)
+
+        local children = contents:GetLayoutChildren()
+        if not children or #children == 0 then return end
+
+        local leading = {}
+        local sections = {}
+        local currentSection, currentQuest
+
+        for _, child in ipairs(children) do
+            if isHeader[child] then
+                currentSection = {
+                    header = child,
+                    quests = {},
+                    trailing = {},
+                    hasCompleted = false,
+                    order = #sections + 1,
+                }
+                sections[#sections + 1] = currentSection
+                currentQuest = nil
+            elseif isTitle[child] then
+                if not currentSection then
+                    currentSection = {
+                        header = nil,
+                        quests = {},
+                        trailing = {},
+                        hasCompleted = false,
+                        order = #sections + 1,
+                    }
+                    sections[#sections + 1] = currentSection
+                end
+                local done = IsQuestEntryCompleted(child)
+                currentQuest = {
+                    title = child,
+                    objectives = {},
+                    completed = done,
+                    order = #currentSection.quests + 1,
+                }
+                currentSection.quests[#currentSection.quests + 1] = currentQuest
+                if done then currentSection.hasCompleted = true end
+            elseif isObj[child] then
+                if currentQuest then
+                    currentQuest.objectives[#currentQuest.objectives + 1] = child
+                elseif currentSection then
+                    currentSection.trailing[#currentSection.trailing + 1] = child
+                else
+                    leading[#leading + 1] = child
+                end
+            else
+                if not currentSection then
+                    leading[#leading + 1] = child
+                else
+                    currentSection.trailing[#currentSection.trailing + 1] = child
+                end
+            end
+        end
+
+        if #sections == 0 then return end
+
+        table.sort(sections, function(a, b)
+            if a.hasCompleted ~= b.hasCompleted then return a.hasCompleted end
+            return a.order < b.order
+        end)
+
+        for _, sec in ipairs(sections) do
+            table.sort(sec.quests, function(a, b)
+                if a.completed ~= b.completed then return a.completed end
+                return a.order < b.order
+            end)
+        end
+
+        local idx = 1
+        local function assign(f)
+            f.layoutIndex = idx
+            idx = idx + 1
+        end
+
+        for _, f in ipairs(leading) do assign(f) end
+        for _, sec in ipairs(sections) do
+            if sec.header then assign(sec.header) end
+            for _, q in ipairs(sec.quests) do
+                assign(q.title)
+                for _, obj in ipairs(q.objectives) do assign(obj) end
+            end
+            for _, tr in ipairs(sec.trailing) do assign(tr) end
+        end
+
+        contents:Layout()
+    end)
+    sortingQuestLog = false
+    if not ok then
+        -- Fail silently in production, or could debug-print if needed
+    end
+end
+
+local function RefreshQuestLogSort()
+    if sortCheckButton and db then
+        sortCheckButton:SetChecked(db.sortQuestLog and true or false)
+    end
+    if type(QuestLogQuests_Update) == "function" then
+        QuestLogQuests_Update()
+    end
+end
+
+local function EnsureQuestLogSortButton()
+    if sortCheckButton or not QuestScrollFrame then return end
+    local btn = CreateFrame("CheckButton", "QuestBeaconSortCheckButton", QuestScrollFrame, "UICheckButtonTemplate")
+    btn:SetSize(22, 22)
+    btn:SetPoint("TOPRIGHT", QuestScrollFrame, "TOPRIGHT", -2, 24)
+    btn:SetChecked(db and db.sortQuestLog and true or false)
+
+    local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("RIGHT", btn, "LEFT", -2, 0)
+    label:SetText("Sort: Done")
+
+    btn:SetScript("OnClick", function(self)
+        if not db then return end
+        db.sortQuestLog = self:GetChecked() and true or false
+        RefreshQuestLogSort()
+    end)
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText("QuestBeacon: Sort Completed First", 1, 0.82, 0)
+        GameTooltip:AddLine("Moves completed quests and their zones to the top of the quest log.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    sortCheckButton = btn
+end
+
+local function SetupQuestLogSort()
+    if not questLogHooked and type(QuestLogQuests_Update) == "function" and QuestScrollFrame then
+        hooksecurefunc("QuestLogQuests_Update", SortQuestScrollFrame)
+        questLogHooked = true
+    end
+    if questLogHooked then
+        EnsureQuestLogSortButton()
+    end
+end
+
+---------------------------------------------------------------------------
 -- Events
 ---------------------------------------------------------------------------
 local frame = CreateFrame("Frame")
 local handlers = {}
 
 function handlers.ADDON_LOADED(name)
-    if name ~= ADDON_NAME then return end
-    QuestBeaconDB = QuestBeaconDB or {}
-    QuestBeaconLearned = QuestBeaconLearned or {}
-    db, learned = QuestBeaconDB, QuestBeaconLearned
-    for k, v in pairs(DEFAULTS) do
-        if db[k] == nil then db[k] = v end
+    if name == ADDON_NAME then
+        QuestBeaconDB = QuestBeaconDB or {}
+        QuestBeaconLearned = QuestBeaconLearned or {}
+        db, learned = QuestBeaconDB, QuestBeaconLearned
+        for k, v in pairs(DEFAULTS) do
+            if db[k] == nil then db[k] = v end
+        end
+    end
+    if name == ADDON_NAME or name == "Blizzard_WorldMap" then
+        SetupQuestLogSort()
     end
 end
 
 function handlers.PLAYER_ENTERING_WORLD()
     if db.enabled then ApplyCVars() end
+    SetupQuestLogSort()
+    RefreshQuestLogSort()
     QueueRefresh()
 end
 
@@ -539,8 +726,8 @@ end)
 local function OnOff(v) return v and "|cff00ff00on|r" or "|cffff4040off|r" end
 
 local function PrintStatus()
-    Print(("enabled %s | size %d | offset %d | hide plates %s | auto-hide LOS %s | grey ? %s | trivial %s | questie %s (%s) | cvars %s"):format(
-        OnOff(db.enabled), db.iconSize, db.yOffset, OnOff(db.hideFriendlyPlates), OnOff(db.occludedOnly), OnOff(db.showIncomplete),
+    Print(("enabled %s | size %d | offset %d | hide plates %s | auto-hide LOS %s | sort log %s | grey ? %s | trivial %s | questie %s (%s) | cvars %s"):format(
+        OnOff(db.enabled), db.iconSize, db.yOffset, OnOff(db.hideFriendlyPlates), OnOff(db.occludedOnly), OnOff(db.sortQuestLog), OnOff(db.showIncomplete),
         OnOff(db.showTrivial), OnOff(db.useQuestie), GetQuestie() and "found" or "not found", OnOff(db.manageCVars)))
     local n = 0
     for _ in pairs(learned) do n = n + 1 end
@@ -551,6 +738,7 @@ local function PrintHelp()
     Print("commands:")
     print("  /qb toggle - enable/disable")
     print("  /qb autohide - toggle auto-hiding icon when in direct line of sight (avoids double !)")
+    print("  /qb sort - toggle sorting completed quests to the top of the quest log")
     print("  /qb size <n> - icon size (default 30)")
     print("  /qb offset <n> - vertical offset (default 6)")
     print("  /qb plates - toggle hiding regular friendly NPC nameplates")
@@ -685,6 +873,10 @@ SlashCmdList.QUESTBEACON = function(msg)
         db.occludedOnly = not db.occludedOnly
         ApplyCVars()
         Print("auto-hide in line of sight " .. OnOff(db.occludedOnly))
+    elseif cmd == "sort" or cmd == "sortlog" then
+        db.sortQuestLog = not db.sortQuestLog
+        RefreshQuestLogSort()
+        Print("sort quest log by completed " .. OnOff(db.sortQuestLog))
     elseif cmd == "size" and tonumber(arg) then
         db.iconSize = math.max(8, math.min(128, tonumber(arg)))
     elseif cmd == "offset" and tonumber(arg) then
