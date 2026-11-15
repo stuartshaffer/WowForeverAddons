@@ -1,0 +1,9 @@
+## Interface: 16001
+## AllowLoadGameType: standard, camelot
+## Title: WowDadJokes
+## Notes: In-game WoW dad joke collection with one-click Joke/Punchline buttons, editor, and two-step random joke keybind.
+## Author: jssha
+## Version: 0.1.0
+## SavedVariables: WowDadJokesDB
+
+WowDadJokes.lua

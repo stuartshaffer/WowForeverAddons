@@ -1,0 +1,11 @@
+<Bindings>
+    <Binding name="WOWDADJOKES_RANDOM" header="WOWDADJOKES" category="ADDONS">
+        WowDadJokes_RandomJoke()
+    </Binding>
+    <Binding name="WOWDADJOKES_CHANNEL" category="ADDONS">
+        WowDadJokes_CycleChannel()
+    </Binding>
+    <Binding name="WOWDADJOKES_TOGGLE" category="ADDONS">
+        WowDadJokes_ToggleUI()
+    </Binding>
+</Bindings>
