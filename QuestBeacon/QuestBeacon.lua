@@ -596,15 +596,6 @@ local function EnsureQuestLogSortButton()
         db.sortQuestLog = self:GetChecked() and true or false
         RefreshQuestLogSort()
     end)
-    btn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("QuestBeacon: Sort Completed First", 1, 0.82, 0)
-        GameTooltip:AddLine("Moves completed quests and their zones to the top of the quest log.", 1, 1, 1, true)
-        GameTooltip:Show()
-    end)
-    btn:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
 
     sortCheckButton = btn
 end
