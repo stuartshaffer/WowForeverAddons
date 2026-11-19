@@ -36,8 +36,9 @@ local DEFAULTS = {
 -- When occludedOnly is enabled, nameplateOccludedAlphaMult is set to 0.4 so the client
 -- signals occlusion via plate:GetAlpha() < 0.99.
 local MANAGED_CVARS = {
-    nameplateShowAll = "1",          -- show nameplates out of combat
-    nameplateShowFriendlyNPCs = "1", -- show nameplates for friendly NPCs
+    nameplateShowAll = "1",             -- show nameplates out of combat
+    nameplateShowFriendlyNPCs = "1",    -- show nameplates for friendly NPCs
+    nameplateForceShowUnitName = "1",   -- ensure unit names are shown on nameplates
     nameplateOccludedAlphaMult = "0.4", -- lowered to allow occlusion detection (plate alpha drops behind walls)
 }
 local MIN_MAX_DISTANCE = 41          -- raise nameplateMaxDistance to at least this
@@ -80,9 +81,6 @@ local function ApplyCVars()
     db.savedCVars = db.savedCVars or {}
     for name, value in pairs(MANAGED_CVARS) do
         local targetValue = value
-        if name == "nameplateOccludedAlphaMult" then
-            targetValue = db.occludedOnly and "0.4" or "1"
-        end
         local cur = GetCV(name)
         if cur ~= nil then
             if db.savedCVars[name] == nil then db.savedCVars[name] = cur end
@@ -281,10 +279,41 @@ local ICON_STYLES = {
 }
 
 local function IsPlateOccluded(plate)
-    -- When nameplateOccludedAlphaMult < 1 (e.g. 0.4), Blizzard automatically reduces
-    -- plate:GetAlpha() when the nameplate is obstructed/behind a wall or obstacle.
+    -- When nameplateOccludedAlphaMult is 0.4, Blizzard automatically reduces
+    -- plate:GetAlpha() to <= 0.4 when obstructed behind a wall/obstacle (vs >= 0.5 in line of sight).
     local a = plate:GetAlpha()
-    return a < 0.95
+    if not a or IsSecret(a) then return false end
+    return a < 0.45
+end
+
+local function IsForbiddenObj(obj)
+    return obj and obj.IsForbidden and obj:IsForbidden() or false
+end
+
+local function GetNameRegion(uf)
+    if not uf or IsForbiddenObj(uf) then return nil end
+    if uf.name and not IsForbiddenObj(uf.name) and uf.name.GetObjectType and uf.name:GetObjectType() == "FontString" then
+        return uf.name
+    end
+    if uf.Name and not IsForbiddenObj(uf.Name) and uf.Name.GetObjectType and uf.Name:GetObjectType() == "FontString" then
+        return uf.Name
+    end
+    for i = 1, select("#", uf:GetRegions()) do
+        local r = select(i, uf:GetRegions())
+        if r and not IsForbiddenObj(r) and r.GetObjectType and r:GetObjectType() == "FontString" then
+            return r
+        end
+    end
+    return nil
+end
+
+local function IsAncestor(ancestor, region)
+    local p = (region and not IsForbiddenObj(region) and region.GetParent) and region:GetParent() or nil
+    while p and not IsForbiddenObj(p) do
+        if p == ancestor then return true end
+        p = p.GetParent and p:GetParent() or nil
+    end
+    return false
 end
 
 local function GetIcon(plate)
@@ -335,16 +364,229 @@ local function StyleIcon(icon, status)
     if style.grey then icon.tex:SetVertexColor(0.75, 0.75, 0.75) else icon.tex:SetVertexColor(1, 1, 1) end
 end
 
-local function SetPlateHidden(plate, hide)
+local subTexts = setmetatable({}, { __mode = "k" }) -- plate -> subtext FontString
+local subTextCache = {}                             -- npcID -> "<Subtext>" or false
+
+local function GetUnitNameColor(unit)
+    if not unit then return 0.1, 1.0, 0.1 end
+    if UnitIsDeadOrGhost and UnitIsDeadOrGhost(unit) then
+        return 0.5, 0.5, 0.5
+    end
+    if UnitSelectionColor then
+        local ok, r, g, b = pcall(UnitSelectionColor, unit, false)
+        if ok and r and g and b and not IsSecret(r) and not IsSecret(g) and not IsSecret(b) then
+            -- UnitSelectionColor(unit, false) returns (0, 0, 1) pure dark blue for ground selection rings,
+            -- whereas 3D floating unit names use (0.5, 0.5, 1.0) periwinkle blue.
+            if b > 0.8 and r < 0.6 and g < 0.7 then
+                return 0.5, 0.5, 1.0
+            end
+            return r, g, b
+        end
+    end
+    if UnitIsPlayer(unit) or (UnitPlayerControlled and UnitPlayerControlled(unit)) then
+        if UnitIsPVP and UnitIsPVP(unit) then
+            return 0.0, 1.0, 0.0
+        end
+        return 0.5, 0.5, 1.0
+    end
+    local reaction = UnitReaction and UnitReaction(unit, "player")
+    if reaction and not IsSecret(reaction) then
+        if reaction <= 2 then return 1.0, 0.0, 0.0
+        elseif reaction == 3 then return 1.0, 0.5, 0.0
+        elseif reaction == 4 then return 1.0, 1.0, 0.0
+        else return 0.0, 1.0, 0.0 end
+    end
+    return 0.0, 1.0, 0.0
+end
+
+local function GetNpcSubText(unit, npcID)
+    if not npcID and unit then
+        npcID = NpcIDFromUnit(unit)
+    end
+    if npcID and subTextCache[npcID] ~= nil then
+        return subTextCache[npcID] or nil
+    end
+
+    local sub = nil
+    local loadedNoSub = false
+
+    -- 1. Try QuestieDB first if available
+    if npcID then
+        local Q = GetQuestie()
+        if Q and type(Q.QueryNPCSingle) == "function" then
+            local ok, res = pcall(Q.QueryNPCSingle, npcID, "subName")
+            if ok and type(res) == "string" and res ~= "" then
+                sub = res
+            end
+        end
+    end
+
+    -- 2. Try C_TooltipInfo.GetUnit(unit)
+    if not sub and unit and C_TooltipInfo and type(C_TooltipInfo.GetUnit) == "function" then
+        local ok, data = pcall(C_TooltipInfo.GetUnit, unit)
+        if ok and type(data) == "table" and type(data.lines) == "table" and data.lines[2] then
+            local line2 = data.lines[2].leftText
+            if type(line2) == "string" and not IsSecret(line2) then
+                line2 = line2:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                local lvlWord = (type(LEVEL) == "string" and LEVEL ~= "") and LEVEL or "Level"
+                local corpseWord = (type(CORPSE) == "string" and CORPSE ~= "") and CORPSE or "Corpse"
+                if line2:find("^" .. lvlWord) or line2:find("^Level ") or line2 == corpseWord or line2 == "PvP" then
+                    loadedNoSub = true
+                elseif line2 ~= "" and not line2:find("^%d+$") then
+                    sub = line2
+                end
+            end
+        end
+    end
+
+    if sub and sub ~= "" then
+        if not sub:find("^<.*>$") then
+            sub = "<" .. sub .. ">"
+        end
+        if npcID then subTextCache[npcID] = sub end
+        return sub
+    end
+
+    if loadedNoSub and npcID then
+        subTextCache[npcID] = false
+    end
+    return nil
+end
+
+local function GetSubTextRegion(plate, uf, nameFS)
+    local subFS = subTexts[plate]
+    if not subFS then
+        subFS = uf:CreateFontString(nil, "ARTWORK")
+        subTexts[plate] = subFS
+    end
+    local font, size, flags = nameFS:GetFont()
+    if font then
+        subFS:SetFont(font, math.max(8, (size or 12) - 1), flags)
+    elseif SystemFont_NamePlate then
+        subFS:SetFontObject(SystemFont_NamePlate)
+    else
+        subFS:SetFontObject(GameFontNormalSmall)
+    end
+    if nameFS.GetShadowColor and subFS.SetShadowColor then
+        subFS:SetShadowColor(nameFS:GetShadowColor())
+    end
+    if nameFS.GetShadowOffset and subFS.SetShadowOffset then
+        subFS:SetShadowOffset(nameFS:GetShadowOffset())
+    end
+    subFS:ClearAllPoints()
+    subFS:SetPoint("TOP", nameFS, "BOTTOM", 0, -1)
+    return subFS
+end
+
+local function SetPlateHidden(plate, hide, unit)
+    if not plate or IsForbiddenObj(plate) then return end
     local uf = plate.UnitFrame
-    if not uf or (uf.IsForbidden and uf:IsForbidden()) then return end
+    if not uf or IsForbiddenObj(uf) then return end
     if hide then
-        uf:SetAlpha(0)
+        unit = unit or uf.unit or plate.namePlateUnitToken
+        local nameFS = GetNameRegion(uf)
+        local occluded = IsPlateOccluded(plate)
+        if not nameFS then
+            uf:SetAlpha(0)
+        else
+            local subFS = subTexts[plate]
+            local subText = GetNpcSubText(unit)
+            if subText then
+                subFS = GetSubTextRegion(plate, uf, nameFS)
+                subFS:SetText(subText)
+            elseif subFS then
+                subFS:SetText("")
+                subFS:Hide()
+            end
+
+            local function HideOtherElements(container)
+                if not container or IsForbiddenObj(container) then return end
+                for i = 1, select("#", container:GetRegions()) do
+                    local r = select(i, container:GetRegions())
+                    if r and not IsForbiddenObj(r) and r ~= nameFS and r ~= subFS and r.SetAlpha then
+                        r:SetAlpha(0)
+                    end
+                end
+                for i = 1, select("#", container:GetChildren()) do
+                    local c = select(i, container:GetChildren())
+                    if c and not IsForbiddenObj(c) and c.SetAlpha then
+                        if IsAncestor(c, nameFS) then
+                            c:SetAlpha(1)
+                            HideOtherElements(c)
+                        else
+                            c:SetAlpha(0)
+                        end
+                    end
+                end
+            end
+            HideOtherElements(uf)
+            if occluded then
+                if nameFS.SetIgnoreParentAlpha then nameFS:SetIgnoreParentAlpha(false) end
+                nameFS:SetAlpha(0)
+                if subFS then
+                    if subFS.SetIgnoreParentAlpha then subFS:SetIgnoreParentAlpha(false) end
+                    subFS:SetAlpha(0)
+                    subFS:Hide()
+                end
+                uf:SetAlpha(0)
+            else
+                local r, g, b = GetUnitNameColor(unit)
+                uf:SetAlpha(1)
+                if nameFS.SetIgnoreParentAlpha then nameFS:SetIgnoreParentAlpha(true) end
+                nameFS:SetAlpha(1)
+                if nameFS.SetTextColor then nameFS:SetTextColor(1, 1, 1) end
+                if nameFS.SetVertexColor then nameFS:SetVertexColor(r, g, b) end
+                if nameFS.Show then nameFS:Show() end
+
+                if subFS and subText then
+                    if subFS.SetIgnoreParentAlpha then subFS:SetIgnoreParentAlpha(true) end
+                    if subFS.SetTextColor then subFS:SetTextColor(1, 1, 1) end
+                    if subFS.SetVertexColor then subFS:SetVertexColor(r, g, b) end
+                    subFS:SetAlpha(1)
+                    subFS:Show()
+                end
+            end
+        end
         hidden[plate] = true
     elseif hidden[plate] then
+        local nameFS = GetNameRegion(uf)
+        if nameFS and nameFS.SetIgnoreParentAlpha then
+            nameFS:SetIgnoreParentAlpha(false)
+        end
+        local subFS = subTexts[plate]
+        if subFS then
+            if subFS.SetIgnoreParentAlpha then subFS:SetIgnoreParentAlpha(false) end
+            subFS:SetText("")
+            subFS:Hide()
+        end
+        local function RestoreElements(container)
+            if not container or IsForbiddenObj(container) then return end
+            for i = 1, select("#", container:GetRegions()) do
+                local r = select(i, container:GetRegions())
+                if r and not IsForbiddenObj(r) and r ~= subFS and r.SetAlpha then r:SetAlpha(1) end
+            end
+            for i = 1, select("#", container:GetChildren()) do
+                local c = select(i, container:GetChildren())
+                if c and not IsForbiddenObj(c) and c.SetAlpha then
+                    c:SetAlpha(1)
+                    RestoreElements(c)
+                end
+            end
+        end
+        RestoreElements(uf)
         uf:SetAlpha(1)
         hidden[plate] = nil
     end
+end
+
+if type(CompactUnitFrame_UpdateName) == "function" then
+    hooksecurefunc("CompactUnitFrame_UpdateName", function(uf)
+        if not uf or IsForbiddenObj(uf) then return end
+        local ok, plate = pcall(uf.GetParent, uf)
+        if ok and plate and not IsForbiddenObj(plate) and hidden[plate] then
+            SetPlateHidden(plate, true, uf.unit)
+        end
+    end)
 end
 
 local function UpdateUnit(unit, cache)
@@ -377,7 +619,7 @@ local function UpdateUnit(unit, cache)
         icons[plate]:Hide()
     end
 
-    SetPlateHidden(plate, db.enabled and db.hideFriendlyPlates and isFriendlyNPC)
+    SetPlateHidden(plate, db.enabled and db.hideFriendlyPlates and isFriendlyNPC, unit)
 end
 
 local function RefreshAll()
@@ -709,6 +951,10 @@ function handlers.PLAYER_LEVEL_UP()
     QueueRefresh()
 end
 
+function handlers.PLAYER_TARGET_CHANGED()
+    RefreshAll()
+end
+
 handlers.GOSSIP_SHOW = LearnGossip
 handlers.QUEST_GREETING = LearnGreeting
 function handlers.QUEST_DETAIL() Learn("s", GetQuestID()) end
@@ -721,6 +967,17 @@ end
 frame:SetScript("OnEvent", function(_, event, ...)
     local h = handlers[event]
     if h then h(...) end
+end)
+
+-- Fast occlusion check so friendly NPC names appear/hide smoothly as you round corners.
+C_Timer.NewTicker(0.1, function()
+    if not db or not db.enabled or not db.hideFriendlyPlates then return end
+    for unit in pairs(activeUnits) do
+        local plate = C_NamePlate.GetNamePlateForUnit(unit)
+        if plate and hidden[plate] then
+            SetPlateHidden(plate, true, unit)
+        end
+    end
 end)
 
 -- Periodic full refresh. Catches status that was computed before Questie finished loading
