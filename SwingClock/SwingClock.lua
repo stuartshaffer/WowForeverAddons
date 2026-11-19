@@ -294,8 +294,11 @@ local function DebugLog(msg)
     if debugStartTime == 0 then debugStartTime = now end
     local wall = date and date("%H:%M:%S") or "00:00:00"
     debugLines[#debugLines + 1] = ("[%s +%06.3fs] %s"):format(wall, now - debugStartTime, tostring(msg))
-    if #debugLines > 200 then
+    if #debugLines > 400 then
         table.remove(debugLines, 1)
+    end
+    if db then
+        db.debugLog = debugLines
     end
     RefreshDebugWindow()
 end
@@ -332,6 +335,7 @@ local function GetOrCreateDebugWindow()
     closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2, -2)
     closeBtn:SetScript("OnClick", function()
         debugMode = false
+        if db then db.debugEnabled = false end
         f:Hide()
     end)
 
@@ -352,6 +356,7 @@ local function GetOrCreateDebugWindow()
     clearBtn:SetText("Clear")
     clearBtn:SetScript("OnClick", function()
         wipe(debugLines)
+        if db then db.debugLog = debugLines end
         debugStartTime = GetTime()
         RefreshDebugWindow()
     end)
@@ -2449,6 +2454,7 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
     if not IsSecret(spellID) and type(spellID) and type(spellID) == "number" then
         if IsHolyStrikeSpell(spellID, nil) then
             MarkHolyStrikeCast()
+            if debugMode then DebugLog(("SPELLCAST HolyStrike (%d)"):format(spellID)) end
             return
         end
         local isSeal, icon, spName = IdentifyPaladinSealSpell(spellID, nil)
@@ -2456,6 +2462,7 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
             pendingSealCast = nil
             prevSealSnapshot = nil
             ActivateSealFromCast(spellID, spName, icon)
+            if debugMode then DebugLog(("SPELLCAST Seal %s (%d)"):format(tostring(spName), spellID)) end
         end
     elseif pendingSealCast and (now - pendingSealCast.time) < 1.0 then
         -- spellID is secret in combat, confirm the pending Seal cast captured from UseAction / CastSpell
@@ -2463,6 +2470,7 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
         pendingSealCast = nil
         prevSealSnapshot = nil
         ActivateSealFromCast(p.spellID, p.name, p.icon)
+        if debugMode then DebugLog(("SPELLCAST PendingSeal %s"):format(tostring(p.name))) end
     end
     RefreshPaladinAuras()
 end
@@ -3186,6 +3194,17 @@ function handlers.ADDON_LOADED(name)
     ApplyClockLayout()
     ApplyBlizzardBarCVar()
 
+    if db.debugEnabled then
+        debugMode = true
+        debugLines = (type(db.debugLog) == "table") and db.debugLog or {}
+        db.debugLog = debugLines
+        debugStartTime = GetTime()
+        DebugLog("--- RELOAD ---")
+        local win = GetOrCreateDebugWindow()
+        RefreshDebugWindow()
+        win:Show()
+    end
+
     -- Integrate seamlessly with WoW Forever's Edit Mode so dragging works there too
     if EventRegistry and EventRegistry.RegisterCallback then
         pcall(EventRegistry.RegisterCallback, EventRegistry, "EditMode.Enter", function()
@@ -3347,15 +3366,17 @@ SlashCmdList.SWINGCLOCK = function(msg)
         Print("Center countdown text " .. TagOnOff(db.showText))
     elseif cmd == "debug" then
         debugMode = not debugMode
+        db.debugEnabled = debugMode
         local win = GetOrCreateDebugWindow()
         if debugMode then
             if #debugLines == 0 then debugStartTime = GetTime() end
+            db.debugLog = debugLines
             RefreshDebugWindow()
             win:Show()
         else
             win:Hide()
         end
-        Print("Debug logging " .. TagOnOff(debugMode))
+        Print("Debug logging " .. TagOnOff(debugMode) .. " (saved to SwingClockDB on /reload)")
     elseif cmd == "toggle" then
         db.enabled = not db.enabled
         ApplyBlizzardBarCVar()
