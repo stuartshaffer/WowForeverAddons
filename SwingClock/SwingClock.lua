@@ -712,15 +712,32 @@ local function ExtractAuraFields(data)
     local name = not IsSecret(data.name) and type(data.name) == "string" and data.name or nil
     local spellID = not IsSecret(data.spellId) and type(data.spellId) == "number" and data.spellId or nil
     local icon = not IsSecret(data.icon) and data.icon or nil
+    local auraInstanceID = not IsSecret(data.auraInstanceID) and type(data.auraInstanceID) == "number" and data.auraInstanceID or nil
     local stacks = 0
-    if not IsSecret(data.applications) and type(data.applications) == "number" then
+    if not IsSecret(data.applications) and type(data.applications) == "number" and data.applications > 0 then
         stacks = data.applications
-    elseif not IsSecret(data.count) and type(data.count) == "number" then
+    elseif not IsSecret(data.count) and type(data.count) == "number" and data.count > 0 then
         stacks = data.count
+    elseif type(data.points) == "table" then
+        local p3 = data.points[3]
+        local p1 = data.points[1]
+        if not IsSecret(p3) and type(p3) == "number" and p3 > 0 then
+            stacks = p3
+        elseif not IsSecret(p1) and type(p1) == "number" and p1 > 0 then
+            stacks = p1
+        end
+    end
+    if stacks <= 0 and auraInstanceID and C_UnitAuras and C_UnitAuras.GetAuraApplicationDisplayCount then
+        local okCnt, cntText = pcall(C_UnitAuras.GetAuraApplicationDisplayCount, "player", auraInstanceID, 1, 99)
+        if okCnt and not IsSecret(cntText) then
+            local n = tonumber(cntText)
+            if n and n > 0 then
+                stacks = n
+            end
+        end
     end
     local duration = not IsSecret(data.duration) and type(data.duration) == "number" and data.duration or 0
     local expirationTime = not IsSecret(data.expirationTime) and type(data.expirationTime) == "number" and data.expirationTime or 0
-    local auraInstanceID = not IsSecret(data.auraInstanceID) and type(data.auraInstanceID) == "number" and data.auraInstanceID or nil
     return hasSecretField, name, spellID, icon, stacks, duration, expirationTime, auraInstanceID
 end
 
@@ -728,6 +745,17 @@ end
 local function ReadPlayerHelpfulAuraByIndex(index)
     if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
         local ok, data = pcall(C_UnitAuras.GetAuraDataByIndex, "player", index, "HELPFUL")
+        if ok then
+            if type(data) == "table" then
+                local isSecretSlot, name, spellID, icon, stacks, duration, expirationTime, auraInstanceID = ExtractAuraFields(data)
+                return true, isSecretSlot, name, spellID, icon, stacks, duration, expirationTime, auraInstanceID
+            elseif data == nil then
+                return false, false, nil
+            end
+        end
+    end
+    if C_UnitAuras and C_UnitAuras.GetBuffDataByIndex then
+        local ok, data = pcall(C_UnitAuras.GetBuffDataByIndex, "player", index)
         if ok then
             if type(data) == "table" then
                 local isSecretSlot, name, spellID, icon, stacks, duration, expirationTime, auraInstanceID = ExtractAuraFields(data)
@@ -812,7 +840,7 @@ RefreshPaladinAuras = function()
                 foundEcho = true
                 eID = id or spID
                 eIcon = icon or ECHO_SPELL_IDS[spID] or FallbackIconForAura(name, eID)
-                eStacks = Clamp((stacks and stacks > 0) and stacks or (echoState.active and echoState.stacks or 1), 1, MAX_ECHO_STACKS)
+                eStacks = Clamp((stacks and stacks > 0) and stacks or 1, 1, MAX_ECHO_STACKS)
                 eDur = dur or 0
                 eExp = exp or 0
                 eInstID = instID
@@ -854,7 +882,7 @@ RefreshPaladinAuras = function()
                     foundEcho = true
                     eID = id
                     eIcon = icon or FallbackIconForAura(name or echoName, id)
-                    eStacks = Clamp((stacks and stacks > 0) and stacks or (echoState.active and echoState.stacks or 1), 1, MAX_ECHO_STACKS)
+                    eStacks = Clamp((stacks and stacks > 0) and stacks or 1, 1, MAX_ECHO_STACKS)
                     eDur = dur or 0
                     eExp = exp or 0
                     eInstID = instID
@@ -898,7 +926,7 @@ RefreshPaladinAuras = function()
                 if isEcho then
                     foundEcho = true
                     eID = spID
-                    eIcon = icon or FallbackIconForAura(name, spID)
+                    eIcon = (spID and ECHO_SPELL_IDS[spID]) or icon or FallbackIconForAura(name, spID)
                     eStacks = Clamp((stacks and stacks > 0) and stacks or 1, 1, MAX_ECHO_STACKS)
                     eDur = dur or 0
                     eExp = exp or 0
@@ -969,7 +997,7 @@ RefreshPaladinAuras = function()
         echoState.expirationTime = eExp
         echoState.spellID = eID
         echoState.auraInstanceID = eInstID
-    elseif not (sawSecretAura or inCombat) then
+    else
         echoState.active = false
         echoState.icon = nil
         echoState.stacks = 0
@@ -2166,25 +2194,7 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
         end
         StartSwing(slot, dur, true)
 
-        -- In-combat Unsealed Wrath Echo stack tracking when C_UnitAuras is secret
-        if isPaladinClass and hasUnsealedWrath and slot == SWING_MH and not testPaladinPreview then
-            if sealState.active and sealState.icon then
-                if echoState.active and echoState.icon == sealState.icon then
-                    echoState.stacks = Clamp((echoState.stacks or 0) + 1, 1, MAX_ECHO_STACKS)
-                else
-                    -- Swinging with a new Seal expends any prior Seal's Echoes and builds 1 stack of the active Seal
-                    echoState.active = true
-                    echoState.icon = sealState.icon
-                    echoState.spellID = sealState.spellID
-                    echoState.stacks = 1
-                end
-            elseif echoState.active then
-                -- Swinging without a Seal active expends existing Echo stacks
-                echoState.active = false
-                echoState.stacks = 0
-                echoState.icon = nil
-                echoState.spellID = nil
-            end
+        if isPaladinClass and hasUnsealedWrath and not testPaladinPreview then
             RefreshPaladinAuras()
         end
     end
