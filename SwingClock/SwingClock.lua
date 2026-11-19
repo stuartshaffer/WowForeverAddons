@@ -2497,6 +2497,14 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
     if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
     local now = GetTime()
     if not IsSecret(spellID) and type(spellID) and type(spellID) == "number" then
+        if SEAL_PROC_SPELL_IDS[spellID] then
+            -- A Seal proc (e.g. Seal of Command 20424) only triggers when a white swing lands;
+            -- even if the proc itself is parried/missed, the white swing itself landed.
+            lastTargetWoundTime = now
+            lastMHSwingWoundSeen = true
+            if debugMode then DebugLog(("SPELLCAST SealProc (%d) -> swing landed"):format(spellID)) end
+            return
+        end
         if IsHolyStrikeSpell(spellID, nil) then
             MarkHolyStrikeCast()
             if debugMode then DebugLog(("SPELLCAST HolyStrike (%d)"):format(spellID)) end
