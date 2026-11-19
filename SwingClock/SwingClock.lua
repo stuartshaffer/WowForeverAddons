@@ -140,6 +140,15 @@ local testDualPreview = false
 local testPaladinPreview = false
 local isPaladinClass = false
 local hasUnsealedWrath = false
+local hasShieldSpecialization = false
+local hasShieldsworn = false
+local shieldSpecIcon = 134952 -- INV_Shield_06 fallback
+local shieldSpecCDStart = 0
+local holyStrikeCDStart = 0
+local holyStrikeCDDuration = 4.5
+local SHIELD_SPEC_ICD = 3.0
+local shieldBoxLastStart = -1
+local shieldBoxLastDur = -1
 local dragState = { active = false, startCurX = 0, startCurY = 0, startOffX = 0, startOffY = 0 }
 
 local mhState = { active = false, startTime = 0, duration = 0, speed = 0, pulseTime = -1 }
@@ -630,12 +639,14 @@ local function DetectPlayerIsPaladin()
     return cls:upper() == "PALADIN"
 end
 
--- Checks a C_Traits configID for the Unsealed Wrath node (definitionID 273096 / spellID 1310735).
--- Returns: foundNode (boolean), isLearned (boolean)
-local function CheckTraitConfigForUnsealedWrath(configID)
-    if not configID or IsSecret(configID) or type(configID) ~= "number" then return false, false end
+-- Checks a C_Traits configID for Unsealed Wrath, Shield Specialization, and Shieldsworn.
+-- Returns: foundUnsealed, unsealedLearned, shieldSpecLearned, shieldswornLearned, shieldIcon
+local function ScanTraitConfigForPaladinTalents(configID)
+    if not configID or IsSecret(configID) or type(configID) ~= "number" then
+        return false, false, false, false, nil
+    end
     if not (C_Traits and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo and C_Traits.GetEntryInfo and C_Traits.GetDefinitionInfo) then
-        return false, false
+        return false, false, false, false, nil
     end
 
     local treeList = {}
@@ -669,6 +680,10 @@ local function CheckTraitConfigForUnsealedWrath(configID)
         end
     end
 
+    local foundUnsealed, unsealedLearned = false, false
+    local shieldSpecLearned, shieldswornLearned = false, false
+    local detectedShieldIcon = nil
+
     for _, treeID in ipairs(treeList) do
         local okNodes, nodes = pcall(C_Traits.GetTreeNodes, treeID)
         if okNodes and type(nodes) == "table" then
@@ -680,47 +695,72 @@ local function CheckTraitConfigForUnsealedWrath(configID)
                         or (not IsSecret(nodeInfo.ranksPurchased) and tonumber(nodeInfo.ranksPurchased))
                         or 0
 
-                    local function MatchesEntry(entryID)
-                        if not entryID or IsSecret(entryID) then return false end
+                    local function InspectEntry(entryID)
+                        if not entryID or IsSecret(entryID) then return end
                         local okE, entryInfo = pcall(C_Traits.GetEntryInfo, configID, entryID)
-                        if not okE or type(entryInfo) ~= "table" or not entryInfo.definitionID then return false end
+                        if not okE or type(entryInfo) ~= "table" or not entryInfo.definitionID then return end
                         local defID = not IsSecret(entryInfo.definitionID) and entryInfo.definitionID or nil
-                        if defID == UNSEALED_WRATH_DEF_ID then return true end
+                        if defID == UNSEALED_WRATH_DEF_ID then
+                            foundUnsealed = true
+                            if rank > 0 then unsealedLearned = true end
+                            return
+                        end
                         local okD, defInfo = pcall(C_Traits.GetDefinitionInfo, entryInfo.definitionID)
                         if okD and type(defInfo) == "table" then
                             local spID = not IsSecret(defInfo.spellID) and defInfo.spellID or nil
                             local ovName = not IsSecret(defInfo.overrideName) and defInfo.overrideName or nil
-                            if spID == UNSEALED_WRATH_SPELL_ID
-                                or (type(ovName) == "string" and ovName:lower() == "unsealed wrath") then
-                                return true
+                            local spName = ovName
+                            if not spName and spID and C_Spell and C_Spell.GetSpellName then
+                                local okSN, sn = pcall(C_Spell.GetSpellName, spID)
+                                if okSN and not IsSecret(sn) and type(sn) == "string" then spName = sn end
+                            end
+                            local lower = type(spName) == "string" and spName:lower() or ""
+                            if spID == UNSEALED_WRATH_SPELL_ID or lower == "unsealed wrath" then
+                                foundUnsealed = true
+                                if rank > 0 then unsealedLearned = true end
+                            elseif lower == "shield specialization" then
+                                if rank > 0 then
+                                    shieldSpecLearned = true
+                                    if spID and C_Spell and C_Spell.GetSpellTexture then
+                                        local okT, tex = pcall(C_Spell.GetSpellTexture, spID)
+                                        if okT and not IsSecret(tex) and tex then detectedShieldIcon = tex end
+                                    end
+                                end
+                            elseif lower == "shieldsworn" or lower == "shield sworn" then
+                                if rank > 0 then
+                                    shieldswornLearned = true
+                                    if not detectedShieldIcon and spID and C_Spell and C_Spell.GetSpellTexture then
+                                        local okT, tex = pcall(C_Spell.GetSpellTexture, spID)
+                                        if okT and not IsSecret(tex) and tex then detectedShieldIcon = tex end
+                                    end
+                                end
                             end
                         end
-                        return false
                     end
 
                     local entryIDs = nodeInfo.entryIDs
                     if type(entryIDs) == "table" then
                         for _, entryID in ipairs(entryIDs) do
-                            if MatchesEntry(entryID) then
-                                return true, (rank > 0)
-                            end
+                            InspectEntry(entryID)
                         end
                     elseif type(nodeInfo.activeEntry) == "table" and nodeInfo.activeEntry.entryID then
-                        if MatchesEntry(nodeInfo.activeEntry.entryID) then
-                            return true, (rank > 0)
-                        end
+                        InspectEntry(nodeInfo.activeEntry.entryID)
                     end
                 end
             end
         end
     end
-    return false, false
+    return foundUnsealed, unsealedLearned, shieldSpecLearned, shieldswornLearned, detectedShieldIcon
 end
 
-local function DetectUnsealedWrathTalent()
-    if not isPaladinClass then return false end
+local function DetectPaladinTalents()
+    if not isPaladinClass then return false, false, false, nil end
 
     local foundNodeAtZero = false
+    local unsealed = false
+    local shieldSpec = false
+    local shieldsworn = false
+    local icon = nil
 
     -- 1. Authoritative C_Traits check (WoW Forever runs Classic talent trees on C_Traits)
     if C_Traits then
@@ -728,28 +768,32 @@ local function DetectUnsealedWrathTalent()
         local function TryConfig(cid, isPrimaryActive)
             if cid and not IsSecret(cid) and type(cid) == "number" and not seenConfigs[cid] then
                 seenConfigs[cid] = true
-                local foundNode, isLearned = CheckTraitConfigForUnsealedWrath(cid)
-                if foundNode then
-                    if isLearned then
-                        return true, true
+                local fU, lU, lSS, lSW, detIcon = ScanTraitConfigForPaladinTalents(cid)
+                if lSS then shieldSpec = true end
+                if lSW then shieldsworn = true end
+                if detIcon and not icon then icon = detIcon end
+                if fU then
+                    if lU then
+                        unsealed = true
+                        return true
                     end
                     foundNodeAtZero = true
                     if isPrimaryActive then
-                        return true, false
+                        return true
                     end
                 end
             end
-            return false, false
+            return false
         end
 
+        local decided = false
         if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
             local okC, cid = pcall(C_ClassTalents.GetActiveConfigID)
             if okC then
-                local decided, learned = TryConfig(cid, true)
-                if decided then return learned end
+                decided = TryConfig(cid, true)
             end
         end
-        if C_SpecializationInfo and C_SpecializationInfo.GetCombatConfigIDForSpecGroup then
+        if not decided and C_SpecializationInfo and C_SpecializationInfo.GetCombatConfigIDForSpecGroup then
             local activeGroup = 1
             if C_SpecializationInfo.GetActiveSpecGroup then
                 local okG, grp = pcall(C_SpecializationInfo.GetActiveSpecGroup)
@@ -759,29 +803,27 @@ local function DetectUnsealedWrathTalent()
             end
             local okCC, ccid = pcall(C_SpecializationInfo.GetCombatConfigIDForSpecGroup, activeGroup)
             if okCC then
-                local decided, learned = TryConfig(ccid, true)
-                if decided then return learned end
+                decided = TryConfig(ccid, true)
             end
         end
-        if C_Traits.GetConfigIDBySystemID then
+        if not decided and C_Traits.GetConfigIDBySystemID then
             for _, sysID in ipairs({ 1, 2, 45 }) do
                 local okS, cid = pcall(C_Traits.GetConfigIDBySystemID, sysID)
-                if okS then
-                    local _, learned = TryConfig(cid, false)
-                    if learned then return true end
-                end
+                if okS and TryConfig(cid, false) then break end
             end
         end
-        if C_Traits.GetConfigsByType then
+        if not decided and C_Traits.GetConfigsByType then
             for t = 0, 5 do
                 local okL, list = pcall(C_Traits.GetConfigsByType, t)
                 if okL and type(list) == "table" then
                     for _, cid in ipairs(list) do
-                        local _, learned = TryConfig(cid, false)
-                        if learned then return true end
+                        if TryConfig(cid, false) then break end
                     end
                 end
             end
+        end
+        if decided then
+            return unsealed, shieldSpec, shieldsworn, icon
         end
     end
 
@@ -796,12 +838,28 @@ local function DetectUnsealedWrathTalent()
                     local tName = not IsSecret(info.name) and info.name or nil
                     local tSpell = not IsSecret(info.spellID) and info.spellID or nil
                     local tID = not IsSecret(info.talentID) and info.talentID or nil
-                    if tSpell == UNSEALED_WRATH_SPELL_ID or tID == UNSEALED_WRATH_DEF_ID
-                        or (type(tName) == "string" and tName:lower() == "unsealed wrath") then
-                        local tRank = (not IsSecret(info.rank) and type(info.rank) == "number" and info.rank)
-                            or (not IsSecret(info.currentRank) and type(info.currentRank) == "number" and info.currentRank)
-                            or 0
-                        return tRank > 0
+                    local tRank = (not IsSecret(info.rank) and type(info.rank) == "number" and info.rank)
+                        or (not IsSecret(info.currentRank) and type(info.currentRank) == "number" and info.currentRank)
+                        or 0
+                    local lower = type(tName) == "string" and tName:lower() or ""
+                    if tSpell == UNSEALED_WRATH_SPELL_ID or tID == UNSEALED_WRATH_DEF_ID or lower == "unsealed wrath" then
+                        if tRank > 0 then unsealed = true end
+                    elseif lower == "shield specialization" then
+                        if tRank > 0 then
+                            shieldSpec = true
+                            if tSpell and C_Spell and C_Spell.GetSpellTexture then
+                                local okT, tex = pcall(C_Spell.GetSpellTexture, tSpell)
+                                if okT and not IsSecret(tex) and tex then icon = icon or tex end
+                            end
+                        end
+                    elseif lower == "shieldsworn" or lower == "shield sworn" then
+                        if tRank > 0 then
+                            shieldsworn = true
+                            if tSpell and C_Spell and C_Spell.GetSpellTexture then
+                                local okT, tex = pcall(C_Spell.GetSpellTexture, tSpell)
+                                if okT and not IsSecret(tex) and tex then icon = icon or tex end
+                            end
+                        end
                     end
                 else
                     emptyStreak = emptyStreak + 1
@@ -811,23 +869,20 @@ local function DetectUnsealedWrathTalent()
         end
     end
 
-    -- If the talent tree explicitly found the Unsealed Wrath node at rank 0, it is NOT taken
     if foundNodeAtZero then
-        return false
+        return false, shieldSpec, shieldsworn, icon
     end
 
-    -- 3. Strict learned-spell check (NEVER IsSpellInSpellBook / IsSpellKnownOrInSpellBook / legacy IsSpellKnown,
-    -- which check spellbook SkillLineAbility membership rather than learned status)
+    -- 3. Strict learned-spell check for Unsealed Wrath
     if IsPlayerSpell then
         local ok, known = pcall(IsPlayerSpell, UNSEALED_WRATH_SPELL_ID)
-        if ok and not IsSecret(known) and known == true then return true end
-    end
-    if C_SpellBook and C_SpellBook.IsSpellKnown then
+        if ok and not IsSecret(known) and known == true then unsealed = true end
+    elseif C_SpellBook and C_SpellBook.IsSpellKnown then
         local ok, known = pcall(C_SpellBook.IsSpellKnown, UNSEALED_WRATH_SPELL_ID)
-        if ok and not IsSecret(known) and known == true then return true end
+        if ok and not IsSecret(known) and known == true then unsealed = true end
     end
 
-    return false
+    return unsealed, shieldSpec, shieldsworn, icon
 end
 
 local function ExtractAuraFields(data)
@@ -1127,8 +1182,28 @@ RefreshPaladinStatus = function()
     isPaladinClass = DetectPlayerIsPaladin()
     if isPaladinClass then
         HarvestKnownPaladinSeals()
+        local unsealed, shieldSpec, shieldsworn, detShieldIcon = DetectPaladinTalents()
+        hasUnsealedWrath = unsealed
+        hasShieldSpecialization = shieldSpec
+        hasShieldsworn = shieldsworn
+        if detShieldIcon then shieldSpecIcon = detShieldIcon end
+        holyStrikeCDDuration = hasShieldsworn and 4.5 or 6.0
+        if GetSpellBaseCooldown then
+            for hsID in pairs(HOLY_STRIKE_SPELL_IDS) do
+                if (IsPlayerSpell and IsPlayerSpell(hsID)) or (C_SpellBook and C_SpellBook.IsSpellKnown and C_SpellBook.IsSpellKnown(hsID)) then
+                    local okB, cdMs = pcall(GetSpellBaseCooldown, hsID)
+                    if okB and not IsSecret(cdMs) and type(cdMs) == "number" and cdMs > 0 then
+                        holyStrikeCDDuration = cdMs / 1000
+                        break
+                    end
+                end
+            end
+        end
+    else
+        hasUnsealedWrath = false
+        hasShieldSpecialization = false
+        hasShieldsworn = false
     end
-    hasUnsealedWrath = isPaladinClass and DetectUnsealedWrathTalent() or false
     RefreshPaladinAuras()
 end
 
@@ -1552,6 +1627,18 @@ UpdatePaladinUI = function()
     else
         eb:Hide()
     end
+
+    -- 3. Right Box (Alternative when Unsealed Wrath is NOT taken): Shield Specialization / Shieldsworn Mana Refill Timer
+    local shb = clockFrame.shieldBox
+    if shb then
+        local showShieldBox = isPaladinClass and not hasUnsealedWrath and (hasShieldSpecialization or hasShieldsworn) and not testPaladinPreview
+        if showShieldBox then
+            shb.iconTex:SetTexture(shieldSpecIcon or 134952)
+            shb:Show()
+        else
+            shb:Hide()
+        end
+    end
 end
 
 local RefreshGridOverlay, UpdateDragLabel, ComputeSnappedPosition -- forward declarations
@@ -1856,6 +1943,16 @@ local function ApplyClockLayout()
                 pip.fillTex:SetSize(pipFillSz, pipFillSz)
             end
         end
+    end
+
+    if clockFrame.shieldBox then
+        local shb = clockFrame.shieldBox
+        shb:SetSize(boxSz, boxSz)
+        shb:ClearAllPoints()
+        shb:SetPoint("LEFT", clockFrame, "RIGHT", boxGap, 0)
+        shb.bgTex:SetSize(innerBoxSz, innerBoxSz)
+        shb.iconTex:SetSize(innerBoxSz, innerBoxSz)
+        shb.cooldown:SetSize(innerBoxSz, innerBoxSz)
     end
 
     if isPaladinClass and HasNativeAuraContainer() then
@@ -2380,6 +2477,90 @@ local function CreateClockFrame()
     echoBox:Hide()
     f.echoBox = echoBox
 
+    -- 8. Paladin Protection Box: Shield Specialization / Shieldsworn Mana Refill Timer
+    -- (Shown in the same right-side slot when Unsealed Wrath is NOT taken)
+    local shieldBox = CreateFrame("Frame", nil, f)
+    shieldBox:SetFrameLevel(baseLevel + 2)
+    shieldBox:EnableMouse(false)
+
+    local shBg = shieldBox:CreateTexture(nil, "BACKGROUND", nil, 0)
+    shBg:SetPoint("CENTER", shieldBox, "CENTER", 0, 0)
+    SetSolidLineColor(shBg, 0.12, 0.09, 0.05, 0.86)
+    shieldBox.bgTex = shBg
+
+    local shIcon = shieldBox:CreateTexture(nil, "ARTWORK", nil, 0)
+    shIcon:SetPoint("CENTER", shieldBox, "CENTER", 0, 0)
+    shIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    shIcon:SetTexture(shieldSpecIcon or 134952)
+    shieldBox.iconTex = shIcon
+
+    local shCD = CreateFrame("Cooldown", nil, shieldBox, "CooldownFrameTemplate")
+    shCD:SetPoint("CENTER", shieldBox, "CENTER", 0, 0)
+    shCD:SetFrameLevel(baseLevel + 3)
+    shCD:SetDrawEdge(true)
+    if shCD.SetDrawBling then shCD:SetDrawBling(false) end
+    if shCD.SetHideCountdownNumbers then shCD:SetHideCountdownNumbers(true) end
+    if shCD.SetSwipeColor then shCD:SetSwipeColor(0, 0, 0, 0.65) end
+    shieldBox.cooldown = shCD
+
+    local shBezelFrame = CreateFrame("Frame", nil, shieldBox)
+    shBezelFrame:SetAllPoints(shieldBox)
+    shBezelFrame:SetFrameLevel(baseLevel + 6)
+    local shBezel = shBezelFrame:CreateTexture(nil, "OVERLAY", nil, 1)
+    shBezel:SetAllPoints(shieldBox)
+    shBezel:SetTexture(TEX_SEAL_BOX)
+    shieldBox.bezelTex = shBezel
+
+    local shTimer = shBezelFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    shTimer:SetPoint("TOP", shieldBox, "BOTTOM", 0, -3)
+    shTimer:SetJustifyH("CENTER")
+    shTimer:SetText("Ready")
+    shieldBox.timerText = shTimer
+
+    local shieldTickAccum = 0
+    shieldBox:SetScript("OnUpdate", function(_, elapsed)
+        shieldTickAccum = shieldTickAccum + (elapsed or 0)
+        if shieldTickAccum < 0.05 then return end
+        shieldTickAccum = 0
+
+        local now = GetTime()
+        local blockEnd = hasShieldSpecialization and (shieldSpecCDStart + SHIELD_SPEC_ICD) or 0
+        local hsEnd = hasShieldsworn and (holyStrikeCDStart + holyStrikeCDDuration) or 0
+
+        local blockRem = hasShieldSpecialization and math.max(0, blockEnd - now) or math.huge
+        local hsRem = hasShieldsworn and math.max(0, hsEnd - now) or math.huge
+
+        local nextRem = math.min(blockRem, hsRem)
+        if nextRem == math.huge or nextRem <= 0.02 then
+            if shieldBoxLastStart ~= 0 or shieldBoxLastDur ~= 0 then
+                shieldBoxLastStart = 0
+                shieldBoxLastDur = 0
+                shCD:Clear()
+            end
+            shIcon:SetVertexColor(1, 1, 1, 1)
+            shTimer:SetText("Ready")
+            shTimer:SetTextColor(0.28, 0.94, 0.42, 1)
+        else
+            local limStart, limDur
+            if blockRem <= hsRem then
+                limStart, limDur = shieldSpecCDStart, SHIELD_SPEC_ICD
+            else
+                limStart, limDur = holyStrikeCDStart, holyStrikeCDDuration
+            end
+            if shieldBoxLastStart ~= limStart or shieldBoxLastDur ~= limDur then
+                shieldBoxLastStart = limStart
+                shieldBoxLastDur = limDur
+                shCD:SetCooldown(limStart, limDur)
+            end
+            shIcon:SetVertexColor(0.65, 0.65, 0.65, 1)
+            shTimer:SetText(("%.1fs"):format(nextRem))
+            shTimer:SetTextColor(1.0, 0.88, 0.35, 1)
+        end
+    end)
+
+    shieldBox:Hide()
+    f.shieldBox = shieldBox
+
     -- Dedicated top-level drag hitbox with live grid + screen-center magnetic snapping
     local dragOverlay = CreateFrame("Frame", nil, f)
     dragOverlay:SetFrameLevel(baseLevel + 12)
@@ -2646,6 +2827,15 @@ function handlers.UNIT_COMBAT(unit, action)
         DebugLog(("UNIT_COMBAT unit=%s action=%s (+%.0fms from MH)"):format(tostring(unit), tostring(action), (GetTime() - lastMHSwingTime) * 1000))
     end
 
+    if isPaladinClass and unit == "player" and action == "BLOCK" then
+        if hasShieldSpecialization then
+            local now = GetTime()
+            if now >= (shieldSpecCDStart + SHIELD_SPEC_ICD) then
+                shieldSpecCDStart = now
+            end
+        end
+    end
+
     if isPaladinClass and unit == "target" then
         if action == "WOUND" then
             lastTargetWoundTime = GetTime()
@@ -2760,6 +2950,9 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
         end
         if IsHolyStrikeSpell(spellID, nil) then
             MarkHolyStrikeCast()
+            if hasShieldsworn then
+                holyStrikeCDStart = now
+            end
             if debugMode then DebugLog(("SPELLCAST HolyStrike (%d)"):format(spellID)) end
             return
         end
