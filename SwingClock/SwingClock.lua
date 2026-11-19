@@ -271,6 +271,8 @@ local lastHolyStrikeTime = 0
 local lastTargetAvoidTime = 0
 local lastKnownBuffCount = nil
 local pendingEchoSwingToken = 0
+local debugMode = false
+local lastMHSwingTime = 0
 
 local function FallbackIconForAura(name, spellID)
     if spellID then
@@ -2174,16 +2176,25 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
         if isPaladinClass and hasUnsealedWrath and not testPaladinPreview then
             if slot == SWING_MH then
                 local now = GetTime()
+                lastMHSwingTime = now
+                if debugMode then
+                    Print(("DEBUG PLAYER_SWING MH (hsDelta=%.0fms, avoidDelta=%.0fms)"):format((now - lastHolyStrikeTime) * 1000, (now - lastTargetAvoidTime) * 1000))
+                end
                 if (now - lastHolyStrikeTime) >= 0.35 and (now - lastTargetAvoidTime) >= 0.20 then
                     pendingEchoSwingToken = pendingEchoSwingToken + 1
                     local myToken = pendingEchoSwingToken
                     if C_Timer and C_Timer.After then
-                        -- Defer 0.08s so same-frame Holy Strike (UNIT_SPELLCAST_SUCCEEDED) or
+                        -- Defer 0.15s so Holy Strike (UNIT_SPELLCAST_SUCCEEDED) or
                         -- target MISS/PARRY/DODGE (UNIT_COMBAT) cancels this swing before it updates Echo stacks
-                        C_Timer.After(0.08, function()
+                        C_Timer.After(0.15, function()
                             if pendingEchoSwingToken == myToken then
+                                if debugMode then
+                                    Print("DEBUG ApplyCombatEchoSwingHit() -> stacks=" .. tostring(echoState.stacks))
+                                end
                                 ApplyCombatEchoSwingHit()
                                 RefreshPaladinAuras()
+                            elseif debugMode then
+                                Print("DEBUG MH swing cancelled before 150ms commit")
                             end
                         end)
                     else
@@ -2235,7 +2246,15 @@ end
 -- Classic / Forever Parry Haste + Target Miss/Parry/Dodge cancellation for Unsealed Wrath
 function handlers.UNIT_COMBAT(unit, action)
     if not db or not db.enabled then return end
-    if IsSecret(unit) or IsSecret(action) then return end
+    if IsSecret(unit) or IsSecret(action) then
+        if debugMode then
+            Print(("DEBUG UNIT_COMBAT SECRET (unitSecret=%s, actionSecret=%s)"):format(tostring(IsSecret(unit)), tostring(IsSecret(action))))
+        end
+        return
+    end
+    if debugMode and (unit == "target" or unit == "player") then
+        Print(("DEBUG UNIT_COMBAT unit=%s action=%s (+%.0fms from MH)"):format(tostring(unit), tostring(action), (GetTime() - lastMHSwingTime) * 1000))
+    end
 
     if isPaladinClass and unit == "target" then
         if action == "MISS" or action == "PARRY" or action == "DODGE" or action == "EVADE"
@@ -3223,6 +3242,9 @@ SlashCmdList.SWINGCLOCK = function(msg)
         if not db.showText and clockFrame then clockFrame.timerText:SetText("") end
         RefreshConfigUI()
         Print("Center countdown text " .. TagOnOff(db.showText))
+    elseif cmd == "debug" then
+        debugMode = not debugMode
+        Print("Debug logging " .. TagOnOff(debugMode))
     elseif cmd == "toggle" then
         db.enabled = not db.enabled
         ApplyBlizzardBarCVar()
