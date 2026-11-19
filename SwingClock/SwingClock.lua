@@ -1377,16 +1377,24 @@ local function BuildNativePaladinAuras()
             echoFilterIDs[id] = true
         end
 
-        local rc = (db and db.readyColor) or DEFAULTS.readyColor
+    local rc = (db and db.readyColor) or DEFAULTS.readyColor
         local r = math.floor(Clamp(rc.r + 0.04, 0, 1) * 255 + 0.5)
         local g = math.floor(Clamp(rc.g + 0.14, 0, 1) * 255 + 0.5)
         local b = math.floor(Clamp(rc.b + 0.06, 0, 1) * 255 + 0.5)
-        local dot = ("|T%s:%d:%d:0:0:64:64:0:64:0:64:%d:%d:%d|t"):format(TEX_DISC, pipFillSz, pipFillSz, r, g, b)
+        local pipDotSz = math.max(4, math.floor(pipOrbSz * 0.58 + 0.5))
+        local function PipDot(idx)
+            local ox = -(idx - 1) * pipDotSz
+            local oy = (2 - idx) * pipStepY
+            return ("|T%s:%d:%d:%d:%d:64:64:0:64:0:64:%d:%d:%d|t"):format(TEX_DISC, pipDotSz, pipDotSz, ox, oy, r, g, b)
+        end
+        local dot1 = PipDot(1)
+        local dot2 = PipDot(2)
+        local dot3 = PipDot(3)
         local pipsFmt = CreateNumericFormatter({
             { threshold = 0, format = "" },
-            { threshold = 1, format = dot },
-            { threshold = 2, format = dot .. "\n" .. dot },
-            { threshold = 3, format = dot .. "\n" .. dot .. "\n" .. dot },
+            { threshold = 1, format = dot1 },
+            { threshold = 2, format = dot1 .. dot2 },
+            { threshold = 3, format = dot1 .. dot2 .. dot3 },
         })
 
         pcall(function()
@@ -1409,17 +1417,16 @@ local function BuildNativePaladinAuras()
                     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
                     button:SetIcon(icon)
 
-                    if eb.pips and eb.pips[1] then
+                    if eb.pips and eb.pips[2] then
                         local pipOverlay = CreateFrame("Frame", nil, button)
                         pipOverlay:SetAllPoints(eb)
-                        pipOverlay:SetFrameLevel(eb:GetFrameLevel() + 5)
+                        pipOverlay:SetFrameLevel(eb:GetFrameLevel() + 6)
 
                         local pipFS = pipOverlay:CreateFontString(nil, "OVERLAY")
-                        pipFS:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", pipFillSz, "")
-                        pipFS:SetJustifyH("CENTER")
-                        pipFS:SetJustifyV("TOP")
-                        pipFS:SetSpacing(math.max(0, pipStepY - pipFillSz))
-                        pipFS:SetPoint("TOP", eb.pips[1], "CENTER", 0, math.floor(pipFillSz * 0.5 + 0.5))
+                        pipFS:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", pipDotSz, "")
+                        pipFS:SetJustifyH("LEFT")
+                        pipFS:SetJustifyV("MIDDLE")
+                        pipFS:SetPoint("LEFT", eb.pips[2], "CENTER", -math.floor(pipDotSz * 0.5 + 0.5), 0)
 
                         if not (pipsFmt and pcall(button.SetApplicationCount, button, pipFS, { formatter = pipsFmt })) then
                             pcall(button.SetApplicationCount, button, pipFS, {})
@@ -1812,7 +1819,8 @@ local function ApplyClockLayout()
 
         -- 3 circular Minimap-style pips along the right side of the Echo Box
         local pipOrbSz = Clamp(math.floor(boxSz * 0.32 + 0.5), 10, 52)
-        local pipFillSz = math.floor(pipOrbSz * 0.72 + 0.5)
+        local pipBgSz = math.floor(pipOrbSz * 0.78 + 0.5)
+        local pipFillSz = math.max(4, math.floor(pipOrbSz * 0.58 + 0.5))
         local pipX = math.floor(boxSz * 0.49 + 0.5)
         local pipStepY = math.floor(boxSz * 0.29 + 0.5)
         local yOffsets = { pipStepY, 0, -pipStepY }
@@ -1823,7 +1831,7 @@ local function ApplyClockLayout()
                 pip:SetSize(pipOrbSz, pipOrbSz)
                 pip:ClearAllPoints()
                 pip:SetPoint("CENTER", eb, "CENTER", pipX, yOffsets[i])
-                pip.bgTex:SetSize(pipFillSz, pipFillSz)
+                pip.bgTex:SetSize(pipBgSz, pipBgSz)
                 pip.fillTex:SetSize(pipFillSz, pipFillSz)
             end
         end
@@ -2321,13 +2329,13 @@ local function CreateClockFrame()
     echoBox.pips = {}
     for i = 1, MAX_ECHO_STACKS do
         local pip = CreateFrame("Frame", nil, echoBox)
-        pip:SetFrameLevel(baseLevel + 4)
+        pip:SetFrameLevel(baseLevel + 7)
         pip:EnableMouse(false)
 
         local pBg = pip:CreateTexture(nil, "BACKGROUND", nil, 0)
         pBg:SetPoint("CENTER", pip, "CENTER", 0, 0)
         pBg:SetTexture(TEX_DISC)
-        pBg:SetVertexColor(0.11, 0.08, 0.05, 0.90)
+        pBg:SetVertexColor(0.08, 0.06, 0.04, 1.0)
         pip.bgTex = pBg
 
         local pFill = pip:CreateTexture(nil, "ARTWORK", nil, 0)
@@ -2339,7 +2347,7 @@ local function CreateClockFrame()
 
         local pRingFrame = CreateFrame("Frame", nil, pip)
         pRingFrame:SetAllPoints(pip)
-        pRingFrame:SetFrameLevel(baseLevel + 8)
+        pRingFrame:SetFrameLevel(baseLevel + 9)
         local pRing = pRingFrame:CreateTexture(nil, "OVERLAY", nil, 1)
         pRing:SetAllPoints(pip)
         pRing:SetTexture(TEX_PIP_RING)
