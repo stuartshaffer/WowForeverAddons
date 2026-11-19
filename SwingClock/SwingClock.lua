@@ -44,15 +44,21 @@ local ECHO_SPELL_IDS = {
 }
 local ECHO_SPELL_LIST = { 1311704, 1311703, 1311701, 1311705, 1328198, 1328206 }
 
--- Paladin Seal buff spell IDs across all ranks
+-- Paladin Seal buff spell IDs across all Classic, TBC & WoW Forever ranks
 local SEAL_SPELL_IDS = {
     -- Seal of Righteousness
     [20154] = 132325, [21084] = 132325, [20287] = 132325, [20288] = 132325,
     [20289] = 132325, [20290] = 132325, [20291] = 132325, [20292] = 132325, [20293] = 132325,
+    [25742] = 132325, [25740] = 132325, [25713] = 132325,
     -- Seal of Command
     [20375] = 132347, [20915] = 132347, [20918] = 132347, [20919] = 132347, [20920] = 132347,
-    -- Seal of Fury / Seal of the Crusader
+    [20424] = 132347, [27170] = 132347,
+    -- Seal of Fury (WoW Forever custom Seal IDs 1311648..1311660) & Seal of the Crusader
+    [1311648] = 135957, [1311649] = 135957, [1311650] = 135957, [1311651] = 135957,
+    [1311652] = 135957, [1311653] = 135957, [1311654] = 135957, [1311655] = 135957,
+    [1311656] = 135957, [1311657] = 135957, [1311658] = 135957, [1311659] = 135957, [1311660] = 135957,
     [21082] = 135957, [20162] = 135957, [20305] = 135957, [20306] = 135957, [20307] = 135957, [20308] = 135957,
+    [27158] = 135957,
     -- Seal of Justice
     [20164] = 135971, [31895] = 135971,
     -- Seal of Light
@@ -61,12 +67,30 @@ local SEAL_SPELL_IDS = {
     [20166] = 135960, [20356] = 135960, [20357] = 135960, [27166] = 135960,
 }
 local SEAL_SPELL_LIST = {
-    20154, 21084, 20287, 20288, 20289, 20290, 20291, 20292, 20293,
-    20375, 20915, 20918, 20919, 20920,
-    21082, 20162, 20305, 20306, 20307, 20308,
+    20154, 21084, 20287, 20288, 20289, 20290, 20291, 20292, 20293, 25742, 25740, 25713,
+    20375, 20915, 20918, 20919, 20920, 20424, 27170,
+    1311649, 1311648, 1311650, 1311651, 1311652, 1311653, 1311654, 1311655, 1311656, 1311657, 1311658, 1311659, 1311660,
+    21082, 20162, 20305, 20306, 20307, 20308, 27158,
     20164, 31895,
     20165, 20347, 20348, 20349, 27160,
     20166, 20356, 20357, 27166,
+}
+local SEAL_NAMES_LIST = {
+    "Seal of Righteousness",
+    "Seal of Command",
+    "Seal of Fury",
+    "Seal of the Crusader",
+    "Seal of Justice",
+    "Seal of Light",
+    "Seal of Wisdom",
+}
+local ECHO_NAMES_LIST = {
+    "Echo of Righteousness",
+    "Echo of Command",
+    "Echo of Fury",
+    "Echo of Justice",
+    "Echo of Light",
+    "Echo of Wisdom",
 }
 
 local DEFAULTS = {
@@ -234,227 +258,12 @@ local SEAL_NAME_ICONS = {
     ["wisdom"]        = 135960,
 }
 
-local function DetectPlayerIsPaladin()
-    if not UnitClass then return false end
-    local ok, _, cls = pcall(UnitClass, "player")
-    if (not ok or not cls or IsSecret(cls)) and UnitClassBase then
-        local ok2, cls2 = pcall(UnitClassBase, "player")
-        if ok2 then cls = cls2 end
-    end
-    if not cls or IsSecret(cls) or type(cls) ~= "string" then return false end
-    return cls:upper() == "PALADIN"
-end
+local UNSEALED_WRATH_DEF_ID = 273096
+local JUDGEMENT_SPELL_ID    = 20271
 
-local function CheckTraitConfigForUnsealedWrath(configID)
-    if not configID or IsSecret(configID) or type(configID) ~= "number" then return false end
-    if not (C_Traits and C_Traits.GetConfigInfo and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo) then return false end
-
-    local okInfo, cfg = pcall(C_Traits.GetConfigInfo, configID)
-    if not okInfo or type(cfg) ~= "table" or type(cfg.treeIDs) ~= "table" then return false end
-
-    for _, treeID in ipairs(cfg.treeIDs) do
-        local okNodes, nodes = pcall(C_Traits.GetTreeNodes, treeID)
-        if okNodes and type(nodes) == "table" then
-            for _, nodeID in ipairs(nodes) do
-                local okN, nodeInfo = pcall(C_Traits.GetNodeInfo, configID, nodeID)
-                if okN and type(nodeInfo) == "table" then
-                    local rank = (not IsSecret(nodeInfo.currentRank) and tonumber(nodeInfo.currentRank))
-                        or (not IsSecret(nodeInfo.activeRank) and tonumber(nodeInfo.activeRank))
-                        or (not IsSecret(nodeInfo.ranksPurchased) and tonumber(nodeInfo.ranksPurchased))
-                        or 0
-                    if rank > 0 and C_Traits.GetEntryInfo and C_Traits.GetDefinitionInfo then
-                        local entryIDs = nodeInfo.entryIDs
-                        if type(entryIDs) == "table" then
-                            for _, entryID in ipairs(entryIDs) do
-                                local okE, entryInfo = pcall(C_Traits.GetEntryInfo, configID, entryID)
-                                if okE and type(entryInfo) == "table" and entryInfo.definitionID then
-                                    local okD, defInfo = pcall(C_Traits.GetDefinitionInfo, entryInfo.definitionID)
-                                    if okD and type(defInfo) == "table" then
-                                        local spID = not IsSecret(defInfo.spellID) and defInfo.spellID or nil
-                                        local ovName = not IsSecret(defInfo.overrideName) and defInfo.overrideName or nil
-                                        if spID == UNSEALED_WRATH_SPELL_ID
-                                            or (type(ovName) == "string" and ovName:lower() == "unsealed wrath") then
-                                            return true
-                                        end
-                                    end
-                                end
-                            end
-                        elseif type(nodeInfo.activeEntry) == "table" and nodeInfo.activeEntry.entryID then
-                            local okE, entryInfo = pcall(C_Traits.GetEntryInfo, configID, nodeInfo.activeEntry.entryID)
-                            if okE and type(entryInfo) == "table" and entryInfo.definitionID then
-                                local okD, defInfo = pcall(C_Traits.GetDefinitionInfo, entryInfo.definitionID)
-                                if okD and type(defInfo) == "table" then
-                                    local spID = not IsSecret(defInfo.spellID) and defInfo.spellID or nil
-                                    local ovName = not IsSecret(defInfo.overrideName) and defInfo.overrideName or nil
-                                    if spID == UNSEALED_WRATH_SPELL_ID
-                                        or (type(ovName) == "string" and ovName:lower() == "unsealed wrath") then
-                                        return true
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return false
-end
-
-local function DetectUnsealedWrathTalent()
-    if not isPaladinClass then return false end
-
-    -- 1. Modern C_SpellBook & direct spell-known checks for Unsealed Wrath (SpellID 1310735)
-    if C_SpellBook then
-        if C_SpellBook.IsSpellKnown then
-            local ok, known = pcall(C_SpellBook.IsSpellKnown, UNSEALED_WRATH_SPELL_ID)
-            if ok and not IsSecret(known) and known then return true end
-        end
-        if C_SpellBook.IsSpellKnownOrInSpellBook then
-            local ok, known = pcall(C_SpellBook.IsSpellKnownOrInSpellBook, UNSEALED_WRATH_SPELL_ID)
-            if ok and not IsSecret(known) and known then return true end
-        end
-        if C_SpellBook.IsSpellInSpellBook then
-            local ok, known = pcall(C_SpellBook.IsSpellInSpellBook, UNSEALED_WRATH_SPELL_ID)
-            if ok and not IsSecret(known) and known then return true end
-        end
-    end
-    if IsPlayerSpell then
-        local ok, known = pcall(IsPlayerSpell, UNSEALED_WRATH_SPELL_ID)
-        if ok and not IsSecret(known) and known then return true end
-    end
-    if IsSpellKnown then
-        local ok, known = pcall(IsSpellKnown, UNSEALED_WRATH_SPELL_ID)
-        if ok and not IsSecret(known) and known then return true end
-    end
-    if IsSpellKnownOrOverridesKnown then
-        local ok, known = pcall(IsSpellKnownOrOverridesKnown, UNSEALED_WRATH_SPELL_ID)
-        if ok and not IsSecret(known) and known then return true end
-    end
-
-    -- 2. Direct Talent.db2 ID check (recId 273096 in DBCache.bin = Unsealed Wrath)
-    if GetTalentInfoByID then
-        local activeGroup = 1
-        if C_SpecializationInfo and C_SpecializationInfo.GetActiveSpecGroup then
-            local okG, grp = pcall(C_SpecializationInfo.GetActiveSpecGroup)
-            if okG and not IsSecret(grp) and type(grp) == "number" and grp > 0 then
-                activeGroup = grp
-            end
-        end
-        local ok, a, b, c, d, e, f, g, h, i, j = pcall(GetTalentInfoByID, 273096, activeGroup)
-        if ok and a ~= nil and not IsSecret(a) then
-            if type(a) == "table" then
-                local r = tonumber(a.rank or a.currentRank) or (a.selected and 1) or (a.known and 1) or 0
-                if r > 0 then return true end
-            else
-                -- GetTalentInfoByID returns: talentID, name, texture, selected, available, spellID, ..., known
-                if (type(d) == "boolean" and d) or (type(j) == "boolean" and j) or (type(e) == "number" and e > 0) then
-                    return true
-                end
-            end
-        end
-    end
-
-    -- 3. C_SpecializationInfo.GetTalentInfo scan (Interface 16001 does NOT have GetNumTalentTabs / GetNumTalents)
-    if C_SpecializationInfo and C_SpecializationInfo.GetTalentInfo then
-        for tab = 1, 4 do
-            local emptyStreak = 0
-            for idx = 1, 32 do
-                local okI, info = pcall(C_SpecializationInfo.GetTalentInfo, { specializationIndex = tab, talentIndex = idx })
-                if okI and type(info) == "table" and (info.name or info.talentID or info.spellID) then
-                    emptyStreak = 0
-                    local tName = not IsSecret(info.name) and info.name or nil
-                    local tSpell = not IsSecret(info.spellID) and info.spellID or nil
-                    local tID = not IsSecret(info.talentID) and info.talentID or nil
-                    local tRank = (not IsSecret(info.rank) and tonumber(info.rank))
-                        or (not IsSecret(info.currentRank) and tonumber(info.currentRank))
-                        or ((not IsSecret(info.selected) and info.selected) and 1)
-                        or ((not IsSecret(info.known) and info.known) and 1)
-                        or 0
-                    if (tSpell == UNSEALED_WRATH_SPELL_ID or tID == 273096
-                        or (type(tName) == "string" and tName:lower() == "unsealed wrath"))
-                        and tRank > 0 then
-                        return true
-                    end
-                else
-                    emptyStreak = emptyStreak + 1
-                    if emptyStreak >= 4 then break end
-                end
-            end
-        end
-    end
-
-    -- 4. Global GetTalentInfo scan across tabs 1..4, indices 1..32 (without needing GetNumTalentTabs)
-    if GetTalentInfo then
-        for tab = 1, 4 do
-            local emptyStreak = 0
-            for idx = 1, 32 do
-                local okT, a, b, c, d, e, f, g, h, i, j = pcall(GetTalentInfo, tab, idx)
-                if okT and a ~= nil and not IsSecret(a) then
-                    emptyStreak = 0
-                    local tName, tRank, tSelected
-                    if type(a) == "table" then
-                        tName = not IsSecret(a.name) and a.name or nil
-                        tRank = (not IsSecret(a.rank) and tonumber(a.rank))
-                            or (not IsSecret(a.currentRank) and tonumber(a.currentRank))
-                            or 0
-                        tSelected = (not IsSecret(a.selected) and a.selected) or (not IsSecret(a.known) and a.known)
-                    elseif type(a) == "string" then
-                        tName = a
-                        tRank = (not IsSecret(e) and tonumber(e)) or 0
-                        tSelected = (type(d) == "boolean" and d)
-                    elseif type(b) == "string" then
-                        tName = b
-                        tSelected = (type(d) == "boolean" and d) or (type(j) == "boolean" and j)
-                        tRank = tSelected and 1 or 0
-                    end
-                    if type(tName) == "string" and tName:lower() == "unsealed wrath"
-                        and ((tRank and tRank > 0) or tSelected) then
-                        return true
-                    end
-                else
-                    emptyStreak = emptyStreak + 1
-                    if emptyStreak >= 4 then break end
-                end
-            end
-        end
-    end
-
-    -- 5. C_Traits scan across active class & legacy trait configs
-    if C_Traits then
-        local seenConfigs = {}
-        local function TryConfig(cid)
-            if cid and not IsSecret(cid) and type(cid) == "number" and not seenConfigs[cid] then
-                seenConfigs[cid] = true
-                return CheckTraitConfigForUnsealedWrath(cid)
-            end
-            return false
-        end
-
-        if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
-            local okC, cid = pcall(C_ClassTalents.GetActiveConfigID)
-            if okC and TryConfig(cid) then return true end
-        end
-        if C_Traits.GetConfigsByType then
-            for t = 0, 5 do
-                local okL, list = pcall(C_Traits.GetConfigsByType, t)
-                if okL and type(list) == "table" then
-                    for _, cid in ipairs(list) do
-                        if TryConfig(cid) then return true end
-                    end
-                end
-            end
-        end
-        if C_Traits.GetConfigIDBySystemID then
-            for _, sysID in ipairs({ 1, 2, 45 }) do
-                local okS, cid = pcall(C_Traits.GetConfigIDBySystemID, sysID)
-                if okS and TryConfig(cid) then return true end
-            end
-        end
-    end
-
-    return false
-end
+local pendingSealCast = nil
+local prevSealSnapshot = nil
+local paladinHooksInstalled = false
 
 local function FallbackIconForAura(name, spellID)
     if spellID then
@@ -472,8 +281,434 @@ local function FallbackIconForAura(name, spellID)
     return 132325
 end
 
+local function RegisterPaladinSealSpell(spellID, iconID, spellName)
+    if not spellID or IsSecret(spellID) or type(spellID) ~= "number" or spellID <= 0 then return end
+    local resolvedIcon = (not IsSecret(iconID) and iconID) or SEAL_SPELL_IDS[spellID] or FallbackIconForAura(spellName, spellID)
+    if not SEAL_SPELL_IDS[spellID] then
+        SEAL_SPELL_IDS[spellID] = resolvedIcon
+        SEAL_SPELL_LIST[#SEAL_SPELL_LIST + 1] = spellID
+    elseif resolvedIcon and SEAL_SPELL_IDS[spellID] == 132325 and resolvedIcon ~= 132325 then
+        SEAL_SPELL_IDS[spellID] = resolvedIcon
+    end
+end
+
+local function IdentifyPaladinSealSpell(spellID, spellName)
+    if spellID and not IsSecret(spellID) and type(spellID) == "number" then
+        if SEAL_SPELL_IDS[spellID] then
+            return true, SEAL_SPELL_IDS[spellID], spellName
+        end
+        if C_Spell and C_Spell.GetSpellName then
+            local okN, n = pcall(C_Spell.GetSpellName, spellID)
+            if okN and not IsSecret(n) and type(n) == "string" then
+                spellName = spellName or n
+                if n:lower():find("^seal of ") then
+                    local icon = nil
+                    if C_Spell.GetSpellTexture then
+                        local okT, tex = pcall(C_Spell.GetSpellTexture, spellID)
+                        if okT and not IsSecret(tex) and tex then icon = tex end
+                    end
+                    icon = icon or FallbackIconForAura(n, spellID)
+                    RegisterPaladinSealSpell(spellID, icon, n)
+                    return true, icon, n
+                end
+            end
+        end
+    end
+    if spellName and not IsSecret(spellName) and type(spellName) == "string" then
+        if spellName:lower():find("^seal of ") then
+            local icon = FallbackIconForAura(spellName, spellID)
+            if spellID and not IsSecret(spellID) and type(spellID) == "number" then
+                RegisterPaladinSealSpell(spellID, icon, spellName)
+            end
+            return true, icon, spellName
+        end
+    end
+    return false, nil, nil
+end
+
+local function HarvestKnownPaladinSeals()
+    if not isPaladinClass then return end
+
+    -- 1. Scan player spellbook slots for any "Seal of ..." spells & ranks
+    if C_SpellBook and C_SpellBook.GetSpellBookItemInfo then
+        local bank = (Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
+        for slot = 1, 200 do
+            local ok, info = pcall(C_SpellBook.GetSpellBookItemInfo, slot, bank)
+            if not ok or type(info) ~= "table" then break end
+            local spID = not IsSecret(info.spellID) and info.spellID or nil
+            local name = not IsSecret(info.name) and info.name or nil
+            local icon = not IsSecret(info.iconID) and info.iconID or nil
+            if type(name) == "string" and name:lower():find("^seal of ") and type(spID) == "number" then
+                RegisterPaladinSealSpell(spID, icon, name)
+            end
+        end
+    end
+
+    -- 2. Scan action bar slots 1..180 for any placed Seal spells
+    if GetActionInfo then
+        for slot = 1, 180 do
+            local ok, actionType, id = pcall(GetActionInfo, slot)
+            if ok and not IsSecret(actionType) and not IsSecret(id) then
+                if actionType == "spell" and type(id) == "number" then
+                    IdentifyPaladinSealSpell(id, nil)
+                elseif actionType == "macro" and type(id) == "number" and GetMacroSpell then
+                    local okM, macroSpellID = pcall(GetMacroSpell, id)
+                    if okM and not IsSecret(macroSpellID) and type(macroSpellID) == "number" then
+                        IdentifyPaladinSealSpell(macroSpellID, nil)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function ActivateSealFromCast(spellID, spellName, iconOverride)
+    if not isPaladinClass then return end
+    local now = GetTime()
+    prevSealSnapshot = {
+        active         = sealState.active,
+        icon           = sealState.icon,
+        duration       = sealState.duration,
+        expirationTime = sealState.expirationTime,
+        spellID        = sealState.spellID,
+        auraInstanceID = sealState.auraInstanceID,
+        lastCastTime   = sealState.lastCastTime,
+    }
+    local resolvedIcon = (not IsSecret(iconOverride) and iconOverride)
+        or (spellID and SEAL_SPELL_IDS[spellID])
+        or FallbackIconForAura(spellName, spellID)
+    if spellID and not IsSecret(spellID) and type(spellID) == "number" then
+        RegisterPaladinSealSpell(spellID, resolvedIcon, spellName)
+    end
+    sealState.active = true
+    sealState.spellID = (not IsSecret(spellID) and type(spellID) == "number") and spellID or sealState.spellID
+    sealState.icon = resolvedIcon
+    sealState.duration = 30
+    sealState.expirationTime = now + 30
+    sealState.lastCastTime = now
+
+    if UpdatePaladinUI then UpdatePaladinUI() end
+    if EnsureLoopRunning then EnsureLoopRunning() end
+end
+
+local function IsActionSlotReadyToCast(slot)
+    if C_ActionBar and C_ActionBar.IsUsableAction then
+        local okU, usable = pcall(C_ActionBar.IsUsableAction, slot)
+        if okU and not IsSecret(usable) and usable == false then
+            return false
+        end
+    elseif IsUsableAction then
+        local okU, usable = pcall(IsUsableAction, slot)
+        if okU and not IsSecret(usable) and usable == false then
+            return false
+        end
+    end
+    if GetActionCooldown then
+        local okC, start, duration = pcall(GetActionCooldown, slot)
+        if okC and not IsSecret(start) and not IsSecret(duration)
+            and type(start) == "number" and type(duration) == "number"
+            and start > 0 and duration > 0 and (start + duration - GetTime()) > 0.15 then
+            return false
+        end
+    end
+    return true
+end
+
+local function SetupPaladinCastHooks()
+    if paladinHooksInstalled or not hooksecurefunc then return end
+    paladinHooksInstalled = true
+
+    -- Hook UseAction so pressing any Seal keybind or clicking any Seal button in combat
+    -- captures the non-secret action bar spellID/icon even when combat auras/events are secret.
+    if UseAction then
+        hooksecurefunc("UseAction", function(slot)
+            if not isPaladinClass or not slot or IsSecret(slot) or type(slot) ~= "number" then return end
+            if not GetActionInfo then return end
+            local ok, actionType, id = pcall(GetActionInfo, slot)
+            if not ok or IsSecret(actionType) or IsSecret(id) then return end
+
+            local spID, spName, icon = nil, nil, nil
+            if actionType == "spell" and type(id) == "number" then
+                local isSeal, ic, nm = IdentifyPaladinSealSpell(id, nil)
+                if isSeal then
+                    spID, icon, spName = id, ic, nm
+                end
+            elseif actionType == "macro" and type(id) == "number" and GetMacroSpell then
+                local okM, mSpell = pcall(GetMacroSpell, id)
+                if okM and not IsSecret(mSpell) then
+                    if type(mSpell) == "number" then
+                        local isSeal, ic, nm = IdentifyPaladinSealSpell(mSpell, nil)
+                        if isSeal then spID, icon, spName = mSpell, ic, nm end
+                    elseif type(mSpell) == "string" then
+                        local isSeal, ic, nm = IdentifyPaladinSealSpell(nil, mSpell)
+                        if isSeal then icon, spName = ic, nm end
+                    end
+                end
+            end
+
+            if spID or spName then
+                if not icon and C_ActionBar and C_ActionBar.GetActionTexture then
+                    local okT, tex = pcall(C_ActionBar.GetActionTexture, slot)
+                    if okT and not IsSecret(tex) and tex then icon = tex end
+                end
+                local now = GetTime()
+                pendingSealCast = { spellID = spID, name = spName, icon = icon, time = now }
+                if IsActionSlotReadyToCast(slot) then
+                    ActivateSealFromCast(spID, spName, icon)
+                end
+            end
+        end)
+    end
+
+    if CastSpellByName then
+        hooksecurefunc("CastSpellByName", function(name)
+            if not isPaladinClass or not name or IsSecret(name) or type(name) ~= "string" then return end
+            local cleanName = name:gsub("%b()", ""):match("^%s*(.-)%s*$")
+            local isSeal, icon, nm = IdentifyPaladinSealSpell(nil, cleanName)
+            if isSeal then
+                local now = GetTime()
+                pendingSealCast = { spellID = nil, name = nm, icon = icon, time = now }
+                ActivateSealFromCast(nil, nm, icon)
+            end
+        end)
+    end
+
+    if C_SpellBook and C_SpellBook.CastSpellBookItem and C_SpellBook.GetSpellBookItemInfo then
+        hooksecurefunc(C_SpellBook, "CastSpellBookItem", function(slot, bank)
+            if not isPaladinClass or not slot or IsSecret(slot) or type(slot) ~= "number" then return end
+            local sbBank = (not IsSecret(bank) and bank)
+                or (Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player)
+                or 0
+            local ok, info = pcall(C_SpellBook.GetSpellBookItemInfo, slot, sbBank)
+            if ok and type(info) == "table" then
+                local spID = not IsSecret(info.spellID) and info.spellID or nil
+                local nm = not IsSecret(info.name) and info.name or nil
+                local ic = not IsSecret(info.iconID) and info.iconID or nil
+                local isSeal, resolvedIcon, resolvedName = IdentifyPaladinSealSpell(spID, nm)
+                if isSeal then
+                    local now = GetTime()
+                    pendingSealCast = { spellID = spID, name = resolvedName, icon = ic or resolvedIcon, time = now }
+                    ActivateSealFromCast(spID, resolvedName, ic or resolvedIcon)
+                end
+            end
+        end)
+    end
+end
+
+local function DetectPlayerIsPaladin()
+    if not UnitClass then return false end
+    local ok, _, cls = pcall(UnitClass, "player")
+    if (not ok or not cls or IsSecret(cls)) and UnitClassBase then
+        local ok2, cls2 = pcall(UnitClassBase, "player")
+        if ok2 then cls = cls2 end
+    end
+    if not cls or IsSecret(cls) or type(cls) ~= "string" then return false end
+    return cls:upper() == "PALADIN"
+end
+
+-- Checks a C_Traits configID for the Unsealed Wrath node (definitionID 273096 / spellID 1310735).
+-- Returns: foundNode (boolean), isLearned (boolean)
+local function CheckTraitConfigForUnsealedWrath(configID)
+    if not configID or IsSecret(configID) or type(configID) ~= "number" then return false, false end
+    if not (C_Traits and C_Traits.GetTreeNodes and C_Traits.GetNodeInfo and C_Traits.GetEntryInfo and C_Traits.GetDefinitionInfo) then
+        return false, false
+    end
+
+    local treeList = {}
+    local seenTrees = {}
+    local function AddTree(tid)
+        if tid and not IsSecret(tid) and type(tid) == "number" and not seenTrees[tid] then
+            seenTrees[tid] = true
+            treeList[#treeList + 1] = tid
+        end
+    end
+
+    if C_Traits.GetConfigInfo then
+        local okInfo, cfg = pcall(C_Traits.GetConfigInfo, configID)
+        if okInfo and type(cfg) == "table" and type(cfg.treeIDs) == "table" then
+            for _, tid in ipairs(cfg.treeIDs) do
+                AddTree(tid)
+            end
+        end
+    end
+
+    -- WoW Forever (Camelot) also exposes the class trait tree via C_ClassTalents.GetTraitTreeForSpec(specID)
+    if C_SpecializationInfo and C_SpecializationInfo.GetSpecialization and C_SpecializationInfo.GetSpecializationInfo
+        and C_ClassTalents and C_ClassTalents.GetTraitTreeForSpec then
+        local okS, spec = pcall(C_SpecializationInfo.GetSpecialization)
+        if okS and spec and not IsSecret(spec) then
+            local okID, specID = pcall(C_SpecializationInfo.GetSpecializationInfo, spec)
+            if okID and specID and not IsSecret(specID) then
+                local okT, tid = pcall(C_ClassTalents.GetTraitTreeForSpec, specID)
+                if okT then AddTree(tid) end
+            end
+        end
+    end
+
+    for _, treeID in ipairs(treeList) do
+        local okNodes, nodes = pcall(C_Traits.GetTreeNodes, treeID)
+        if okNodes and type(nodes) == "table" then
+            for _, nodeID in ipairs(nodes) do
+                local okN, nodeInfo = pcall(C_Traits.GetNodeInfo, configID, nodeID)
+                if okN and type(nodeInfo) == "table" then
+                    local rank = (not IsSecret(nodeInfo.activeRank) and tonumber(nodeInfo.activeRank))
+                        or (not IsSecret(nodeInfo.currentRank) and tonumber(nodeInfo.currentRank))
+                        or (not IsSecret(nodeInfo.ranksPurchased) and tonumber(nodeInfo.ranksPurchased))
+                        or 0
+
+                    local function MatchesEntry(entryID)
+                        if not entryID or IsSecret(entryID) then return false end
+                        local okE, entryInfo = pcall(C_Traits.GetEntryInfo, configID, entryID)
+                        if not okE or type(entryInfo) ~= "table" or not entryInfo.definitionID then return false end
+                        local defID = not IsSecret(entryInfo.definitionID) and entryInfo.definitionID or nil
+                        if defID == UNSEALED_WRATH_DEF_ID then return true end
+                        local okD, defInfo = pcall(C_Traits.GetDefinitionInfo, entryInfo.definitionID)
+                        if okD and type(defInfo) == "table" then
+                            local spID = not IsSecret(defInfo.spellID) and defInfo.spellID or nil
+                            local ovName = not IsSecret(defInfo.overrideName) and defInfo.overrideName or nil
+                            if spID == UNSEALED_WRATH_SPELL_ID
+                                or (type(ovName) == "string" and ovName:lower() == "unsealed wrath") then
+                                return true
+                            end
+                        end
+                        return false
+                    end
+
+                    local entryIDs = nodeInfo.entryIDs
+                    if type(entryIDs) == "table" then
+                        for _, entryID in ipairs(entryIDs) do
+                            if MatchesEntry(entryID) then
+                                return true, (rank > 0)
+                            end
+                        end
+                    elseif type(nodeInfo.activeEntry) == "table" and nodeInfo.activeEntry.entryID then
+                        if MatchesEntry(nodeInfo.activeEntry.entryID) then
+                            return true, (rank > 0)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return false, false
+end
+
+local function DetectUnsealedWrathTalent()
+    if not isPaladinClass then return false end
+
+    local foundNodeAtZero = false
+
+    -- 1. Authoritative C_Traits check (WoW Forever runs Classic talent trees on C_Traits)
+    if C_Traits then
+        local seenConfigs = {}
+        local function TryConfig(cid, isPrimaryActive)
+            if cid and not IsSecret(cid) and type(cid) == "number" and not seenConfigs[cid] then
+                seenConfigs[cid] = true
+                local foundNode, isLearned = CheckTraitConfigForUnsealedWrath(cid)
+                if foundNode then
+                    if isLearned then
+                        return true, true
+                    end
+                    foundNodeAtZero = true
+                    if isPrimaryActive then
+                        return true, false
+                    end
+                end
+            end
+            return false, false
+        end
+
+        if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
+            local okC, cid = pcall(C_ClassTalents.GetActiveConfigID)
+            if okC then
+                local decided, learned = TryConfig(cid, true)
+                if decided then return learned end
+            end
+        end
+        if C_SpecializationInfo and C_SpecializationInfo.GetCombatConfigIDForSpecGroup then
+            local activeGroup = 1
+            if C_SpecializationInfo.GetActiveSpecGroup then
+                local okG, grp = pcall(C_SpecializationInfo.GetActiveSpecGroup)
+                if okG and not IsSecret(grp) and type(grp) == "number" and grp > 0 then
+                    activeGroup = grp
+                end
+            end
+            local okCC, ccid = pcall(C_SpecializationInfo.GetCombatConfigIDForSpecGroup, activeGroup)
+            if okCC then
+                local decided, learned = TryConfig(ccid, true)
+                if decided then return learned end
+            end
+        end
+        if C_Traits.GetConfigIDBySystemID then
+            for _, sysID in ipairs({ 1, 2, 45 }) do
+                local okS, cid = pcall(C_Traits.GetConfigIDBySystemID, sysID)
+                if okS then
+                    local _, learned = TryConfig(cid, false)
+                    if learned then return true end
+                end
+            end
+        end
+        if C_Traits.GetConfigsByType then
+            for t = 0, 5 do
+                local okL, list = pcall(C_Traits.GetConfigsByType, t)
+                if okL and type(list) == "table" then
+                    for _, cid in ipairs(list) do
+                        local _, learned = TryConfig(cid, false)
+                        if learned then return true end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. C_SpecializationInfo.GetTalentInfo scan (strict numeric rank > 0 check)
+    if C_SpecializationInfo and C_SpecializationInfo.GetTalentInfo then
+        for tab = 1, 4 do
+            local emptyStreak = 0
+            for idx = 1, 32 do
+                local okI, info = pcall(C_SpecializationInfo.GetTalentInfo, { specializationIndex = tab, talentIndex = idx })
+                if okI and type(info) == "table" and (info.name or info.talentID or info.spellID) then
+                    emptyStreak = 0
+                    local tName = not IsSecret(info.name) and info.name or nil
+                    local tSpell = not IsSecret(info.spellID) and info.spellID or nil
+                    local tID = not IsSecret(info.talentID) and info.talentID or nil
+                    if tSpell == UNSEALED_WRATH_SPELL_ID or tID == UNSEALED_WRATH_DEF_ID
+                        or (type(tName) == "string" and tName:lower() == "unsealed wrath") then
+                        local tRank = (not IsSecret(info.rank) and type(info.rank) == "number" and info.rank)
+                            or (not IsSecret(info.currentRank) and type(info.currentRank) == "number" and info.currentRank)
+                            or 0
+                        return tRank > 0
+                    end
+                else
+                    emptyStreak = emptyStreak + 1
+                    if emptyStreak >= 4 then break end
+                end
+            end
+        end
+    end
+
+    -- If the talent tree explicitly found the Unsealed Wrath node at rank 0, it is NOT taken
+    if foundNodeAtZero then
+        return false
+    end
+
+    -- 3. Strict learned-spell check (NEVER IsSpellInSpellBook / IsSpellKnownOrInSpellBook / legacy IsSpellKnown,
+    -- which check spellbook SkillLineAbility membership rather than learned status)
+    if IsPlayerSpell then
+        local ok, known = pcall(IsPlayerSpell, UNSEALED_WRATH_SPELL_ID)
+        if ok and not IsSecret(known) and known == true then return true end
+    end
+    if C_SpellBook and C_SpellBook.IsSpellKnown then
+        local ok, known = pcall(C_SpellBook.IsSpellKnown, UNSEALED_WRATH_SPELL_ID)
+        if ok and not IsSecret(known) and known == true then return true end
+    end
+
+    return false
+end
+
 local function ExtractAuraFields(data)
-    if type(data) ~= "table" then return nil end
+    if type(data) ~= "table" then return false, nil end
+    local hasSecretField = IsSecret(data.name) or IsSecret(data.spellId) or IsSecret(data.icon)
     local name = not IsSecret(data.name) and type(data.name) == "string" and data.name or nil
     local spellID = not IsSecret(data.spellId) and type(data.spellId) == "number" and data.spellId or nil
     local icon = not IsSecret(data.icon) and data.icon or nil
@@ -486,20 +721,29 @@ local function ExtractAuraFields(data)
     local duration = not IsSecret(data.duration) and type(data.duration) == "number" and data.duration or 0
     local expirationTime = not IsSecret(data.expirationTime) and type(data.expirationTime) == "number" and data.expirationTime or 0
     local auraInstanceID = not IsSecret(data.auraInstanceID) and type(data.auraInstanceID) == "number" and data.auraInstanceID or nil
-    return name, spellID, icon, stacks, duration, expirationTime, auraInstanceID
+    return hasSecretField, name, spellID, icon, stacks, duration, expirationTime, auraInstanceID
 end
 
+-- Returns: slotExists, isSecretSlot, name, spellID, icon, stacks, duration, expirationTime, auraInstanceID
 local function ReadPlayerHelpfulAuraByIndex(index)
     if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
         local ok, data = pcall(C_UnitAuras.GetAuraDataByIndex, "player", index, "HELPFUL")
-        if ok and type(data) == "table" then
-            return ExtractAuraFields(data)
+        if ok then
+            if type(data) == "table" then
+                local isSecretSlot, name, spellID, icon, stacks, duration, expirationTime, auraInstanceID = ExtractAuraFields(data)
+                return true, isSecretSlot, name, spellID, icon, stacks, duration, expirationTime, auraInstanceID
+            elseif data == nil then
+                return false, false, nil
+            end
         end
     end
     if UnitAura then
         local ok, name, icon, count, _, duration, expirationTime, _, _, _, spellID = pcall(UnitAura, "player", index, "HELPFUL")
-        if ok and name and not IsSecret(name) and type(name) == "string" then
-            return name,
+        if ok and name ~= nil then
+            local isSecretSlot = IsSecret(name) or IsSecret(spellID)
+            return true,
+                isSecretSlot,
+                (not IsSecret(name) and type(name) == "string") and name or nil,
                 (not IsSecret(spellID) and type(spellID) == "number") and spellID or nil,
                 (not IsSecret(icon)) and icon or nil,
                 (not IsSecret(count) and type(count) == "number") and count or 0,
@@ -508,7 +752,7 @@ local function ReadPlayerHelpfulAuraByIndex(index)
                 nil
         end
     end
-    return nil
+    return false, false, nil
 end
 
 RefreshPaladinAuras = function()
@@ -532,44 +776,107 @@ RefreshPaladinAuras = function()
     local foundEcho = false
     local eIcon, eStacks, eDur, eExp, eID, eInstID = nil, 0, 0, 0, nil, nil
 
-    -- 1. Fast direct spellID lookup if C_UnitAuras.GetPlayerAuraBySpellID is available
+    local sawSecretAura = false
+    if C_Secrets and C_Secrets.ShouldAurasBeSecret then
+        local okSec, shouldBeSec = pcall(C_Secrets.ShouldAurasBeSecret)
+        if okSec and shouldBeSec then
+            sawSecretAura = true
+        end
+    end
+
+    -- 1. Direct spellID lookup via C_UnitAuras.GetPlayerAuraBySpellID
     if C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
         for _, spID in ipairs(SEAL_SPELL_LIST) do
             local ok, data = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spID)
             if ok and type(data) == "table" then
-                local name, id, icon, _, dur, exp, instID = ExtractAuraFields(data)
+                local isSec, name, id, icon, _, dur, exp, instID = ExtractAuraFields(data)
+                sawSecretAura = sawSecretAura or isSec
                 foundSeal = true
                 sID = id or spID
-                sIcon = icon or FallbackIconForAura(name, sID)
+                sIcon = icon or SEAL_SPELL_IDS[spID] or FallbackIconForAura(name, sID)
                 sDur = dur or 0
                 sExp = exp or 0
                 sInstID = instID
+                break
+            elseif not ok then
+                -- DenyTaintedAccessWhenAurasAreSecret threw in combat
+                sawSecretAura = true
                 break
             end
         end
         for _, spID in ipairs(ECHO_SPELL_LIST) do
             local ok, data = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spID)
             if ok and type(data) == "table" then
-                local name, id, icon, stacks, dur, exp, instID = ExtractAuraFields(data)
+                local isSec, name, id, icon, stacks, dur, exp, instID = ExtractAuraFields(data)
+                sawSecretAura = sawSecretAura or isSec
                 foundEcho = true
                 eID = id or spID
-                eIcon = icon or FallbackIconForAura(name, eID)
-                eStacks = Clamp((stacks and stacks > 0) and stacks or 1, 1, MAX_ECHO_STACKS)
+                eIcon = icon or ECHO_SPELL_IDS[spID] or FallbackIconForAura(name, eID)
+                eStacks = Clamp((stacks and stacks > 0) and stacks or (echoState.active and echoState.stacks or 1), 1, MAX_ECHO_STACKS)
                 eDur = dur or 0
                 eExp = exp or 0
                 eInstID = instID
+                break
+            elseif not ok then
+                sawSecretAura = true
                 break
             end
         end
     end
 
-    -- 2. Full player buff index scan (catches any Seal/Echo rank by spellID or "Seal of " / "Echo of " name)
+    -- 2. Direct spell-name lookup via C_UnitAuras.GetAuraDataBySpellName
+    if (not foundSeal or not foundEcho) and C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName then
+        if not foundSeal then
+            for _, sealName in ipairs(SEAL_NAMES_LIST) do
+                local ok, data = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", sealName, "HELPFUL")
+                if ok and type(data) == "table" then
+                    local isSec, name, id, icon, _, dur, exp, instID = ExtractAuraFields(data)
+                    sawSecretAura = sawSecretAura or isSec
+                    foundSeal = true
+                    sID = id
+                    sIcon = icon or FallbackIconForAura(name or sealName, id)
+                    sDur = dur or 0
+                    sExp = exp or 0
+                    sInstID = instID
+                    break
+                elseif not ok then
+                    sawSecretAura = true
+                    break
+                end
+            end
+        end
+        if not foundEcho then
+            for _, echoName in ipairs(ECHO_NAMES_LIST) do
+                local ok, data = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", echoName, "HELPFUL")
+                if ok and type(data) == "table" then
+                    local isSec, name, id, icon, stacks, dur, exp, instID = ExtractAuraFields(data)
+                    sawSecretAura = sawSecretAura or isSec
+                    foundEcho = true
+                    eID = id
+                    eIcon = icon or FallbackIconForAura(name or echoName, id)
+                    eStacks = Clamp((stacks and stacks > 0) and stacks or (echoState.active and echoState.stacks or 1), 1, MAX_ECHO_STACKS)
+                    eDur = dur or 0
+                    eExp = exp or 0
+                    eInstID = instID
+                    break
+                elseif not ok then
+                    sawSecretAura = true
+                    break
+                end
+            end
+        end
+    end
+
+    -- 3. Full player buff index scan (never breaks early on secret slots!)
     if not foundSeal or not foundEcho then
         for i = 1, 40 do
-            local name, spID, icon, stacks, dur, exp, instID = ReadPlayerHelpfulAuraByIndex(i)
-            if not name and not spID then break end
+            local slotExists, isSecretSlot, name, spID, icon, stacks, dur, exp, instID = ReadPlayerHelpfulAuraByIndex(i)
+            if not slotExists then break end
+            if isSecretSlot then
+                sawSecretAura = true
+            end
 
-            if not foundSeal then
+            if not foundSeal and (name or spID) then
                 local isSeal = (spID and SEAL_SPELL_IDS[spID] ~= nil)
                     or (type(name) == "string" and name:lower():find("^seal of ") ~= nil)
                 if isSeal then
@@ -579,10 +886,13 @@ RefreshPaladinAuras = function()
                     sDur = dur or 0
                     sExp = exp or 0
                     sInstID = instID
+                    if spID then
+                        RegisterPaladinSealSpell(spID, sIcon, name)
+                    end
                 end
             end
 
-            if not foundEcho then
+            if not foundEcho and (name or spID) then
                 local isEcho = (spID and ECHO_SPELL_IDS[spID] ~= nil)
                     or (type(name) == "string" and name:lower():find("^echo of ") ~= nil)
                 if isEcho then
@@ -600,7 +910,25 @@ RefreshPaladinAuras = function()
         end
     end
 
+    -- 4. Non-aura C_Spell.IsActiveSpell check for active Seal in combat when C_UnitAuras is secret
+    if not foundSeal and C_Spell and C_Spell.IsActiveSpell then
+        for _, spID in ipairs(SEAL_SPELL_LIST) do
+            local ok, isActive = pcall(C_Spell.IsActiveSpell, spID)
+            if ok and not IsSecret(isActive) and isActive == true then
+                foundSeal = true
+                sID = spID
+                sIcon = SEAL_SPELL_IDS[spID] or FallbackIconForAura(nil, spID)
+                sDur = 30
+                sExp = 0
+                break
+            end
+        end
+    end
+
     local now = GetTime()
+    local inCombat = (InCombatLockdown and InCombatLockdown()) or (UnitAffectingCombat and UnitAffectingCombat("player"))
+    local preserveCombatSeal = (sawSecretAura or inCombat or (sealState.lastCastTime and (now - sealState.lastCastTime) < 1.5))
+
     if foundSeal then
         local isNewSealInstance = (not sealState.active)
             or (sInstID and sealState.auraInstanceID and sInstID ~= sealState.auraInstanceID)
@@ -617,9 +945,12 @@ RefreshPaladinAuras = function()
             -- Exact non-secret expiration timestamp from C_UnitAuras
             sealState.expirationTime = sExp
         elseif isNewSealInstance or not sealState.expirationTime or sealState.expirationTime <= now then
-            -- Fallback if expirationTime is ever secret in combat: start real-time 30s Seal countdown
+            -- Fallback if expirationTime is secret in combat: start real-time 30s Seal countdown
             sealState.expirationTime = now + sealState.duration
         end
+    elseif preserveCombatSeal and sealState.active and sealState.expirationTime and sealState.expirationTime > now then
+        -- Keep active in-combat Seal and its real-time 30s countdown running while C_UnitAuras is secret
+        sealState.active = true
     else
         sealState.active = false
         sealState.icon = nil
@@ -627,18 +958,25 @@ RefreshPaladinAuras = function()
         sealState.expirationTime = 0
         sealState.spellID = nil
         sealState.auraInstanceID = nil
+        sealState.lastCastTime = nil
     end
 
-    echoState.active = foundEcho
-    echoState.icon = eIcon
-    echoState.stacks = foundEcho and eStacks or 0
-    echoState.duration = eDur
-    echoState.expirationTime = eExp
-    echoState.spellID = eID
-    echoState.auraInstanceID = eInstID
-
-    if foundEcho and not hasUnsealedWrath then
-        hasUnsealedWrath = true
+    if foundEcho then
+        echoState.active = true
+        echoState.icon = eIcon
+        echoState.stacks = eStacks
+        echoState.duration = eDur
+        echoState.expirationTime = eExp
+        echoState.spellID = eID
+        echoState.auraInstanceID = eInstID
+    elseif not (sawSecretAura or inCombat) then
+        echoState.active = false
+        echoState.icon = nil
+        echoState.stacks = 0
+        echoState.duration = 0
+        echoState.expirationTime = 0
+        echoState.spellID = nil
+        echoState.auraInstanceID = nil
     end
 
     if UpdatePaladinUI then UpdatePaladinUI() end
@@ -649,6 +987,10 @@ end
 
 RefreshPaladinStatus = function()
     isPaladinClass = DetectPlayerIsPaladin()
+    if isPaladinClass then
+        SetupPaladinCastHooks()
+        HarvestKnownPaladinSeals()
+    end
     hasUnsealedWrath = isPaladinClass and DetectUnsealedWrathTalent() or false
     RefreshPaladinAuras()
 end
@@ -1823,6 +2165,28 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
             return
         end
         StartSwing(slot, dur, true)
+
+        -- In-combat Unsealed Wrath Echo stack tracking when C_UnitAuras is secret
+        if isPaladinClass and hasUnsealedWrath and slot == SWING_MH and not testPaladinPreview then
+            if sealState.active and sealState.icon then
+                if echoState.active and echoState.icon == sealState.icon then
+                    echoState.stacks = Clamp((echoState.stacks or 0) + 1, 1, MAX_ECHO_STACKS)
+                else
+                    -- Swinging with a new Seal expends any prior Seal's Echoes and builds 1 stack of the active Seal
+                    echoState.active = true
+                    echoState.icon = sealState.icon
+                    echoState.spellID = sealState.spellID
+                    echoState.stacks = 1
+                end
+            elseif echoState.active then
+                -- Swinging without a Seal active expends existing Echo stacks
+                echoState.active = false
+                echoState.stacks = 0
+                echoState.icon = nil
+                echoState.spellID = nil
+            end
+            RefreshPaladinAuras()
+        end
     end
 end
 
@@ -1926,32 +2290,71 @@ function handlers.UNIT_AURA(unit)
     end
 end
 
-function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
+function handlers.UNIT_SPELLCAST_SENT(unit, _, _, spellID)
     if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
     if not IsSecret(spellID) and type(spellID) == "number" then
-        local isSealCast = (SEAL_SPELL_IDS[spellID] ~= nil)
-        local spName = nil
-        if not isSealCast and C_Spell and C_Spell.GetSpellName then
-            local okN, n = pcall(C_Spell.GetSpellName, spellID)
-            if okN and not IsSecret(n) and type(n) == "string" then
-                spName = n
-                if n:lower():find("^seal of ") then
-                    isSealCast = true
-                end
-            end
-        end
-        if isSealCast then
-            local now = GetTime()
-            sealState.active = true
-            sealState.spellID = spellID
-            sealState.icon = SEAL_SPELL_IDS[spellID] or FallbackIconForAura(spName, spellID)
-            sealState.duration = 30
-            sealState.expirationTime = now + 30
-            if UpdatePaladinUI then UpdatePaladinUI() end
-            if EnsureLoopRunning then EnsureLoopRunning() end
+        local isSeal, icon, spName = IdentifyPaladinSealSpell(spellID, nil)
+        if isSeal then
+            pendingSealCast = { spellID = spellID, name = spName, icon = icon, time = GetTime() }
+            ActivateSealFromCast(spellID, spName, icon)
         end
     end
+end
+
+function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
+    if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
+    local now = GetTime()
+    if not IsSecret(spellID) and type(spellID) == "number" then
+        local isSeal, icon, spName = IdentifyPaladinSealSpell(spellID, nil)
+        if isSeal then
+            pendingSealCast = nil
+            prevSealSnapshot = nil
+            ActivateSealFromCast(spellID, spName, icon)
+        elseif spellID == JUDGEMENT_SPELL_ID then
+            -- Standard Judgement unleashes and consumes the active Seal (Swift Judgement 1310994 does not)
+            sealState.active = false
+            sealState.expirationTime = 0
+            sealState.lastCastTime = nil
+        end
+    elseif pendingSealCast and (now - pendingSealCast.time) < 1.0 then
+        -- spellID is secret in combat, confirm the pending Seal cast captured from UseAction / CastSpell
+        local p = pendingSealCast
+        pendingSealCast = nil
+        prevSealSnapshot = nil
+        ActivateSealFromCast(p.spellID, p.name, p.icon)
+    end
     RefreshPaladinAuras()
+end
+
+local function RevertFailedPendingSealCast(unit)
+    if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
+    local now = GetTime()
+    if pendingSealCast and prevSealSnapshot and (now - pendingSealCast.time) < 0.35 then
+        sealState.active         = prevSealSnapshot.active
+        sealState.icon           = prevSealSnapshot.icon
+        sealState.duration       = prevSealSnapshot.duration
+        sealState.expirationTime = prevSealSnapshot.expirationTime
+        sealState.spellID        = prevSealSnapshot.spellID
+        sealState.auraInstanceID = prevSealSnapshot.auraInstanceID
+        sealState.lastCastTime   = prevSealSnapshot.lastCastTime
+        pendingSealCast = nil
+        prevSealSnapshot = nil
+        if UpdatePaladinUI then UpdatePaladinUI() end
+    end
+end
+
+function handlers.UNIT_SPELLCAST_FAILED(unit)
+    RevertFailedPendingSealCast(unit)
+end
+
+function handlers.UNIT_SPELLCAST_FAILED_QUIET(unit)
+    RevertFailedPendingSealCast(unit)
+end
+
+function handlers.ACTIONBAR_SLOT_CHANGED()
+    if isPaladinClass then
+        HarvestKnownPaladinSeals()
+    end
 end
 
 function handlers.CHARACTER_POINTS_CHANGED()
@@ -2004,6 +2407,10 @@ function handlers.PLAYER_REGEN_ENABLED()
     if pendingCVars then
         pendingCVars = false
         ApplyBlizzardBarCVar()
+    end
+    if isPaladinClass then
+        RefreshPaladinStatus()
+        ApplyClockLayout()
     end
     RefreshVisibility()
 end
