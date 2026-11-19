@@ -1,0 +1,9 @@
+## Interface: 16001
+## AllowLoadGameType: standard, camelot
+## Title: SwingClock
+## Notes: Circular clock / pie-chart weapon swing timer with 12 o'clock ready green state and attack pulse.
+## Author: jssha
+## Version: 0.1.0
+## SavedVariables: SwingClockDB
+
+SwingClock.lua
