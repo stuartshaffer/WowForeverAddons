@@ -1268,23 +1268,216 @@ local function UpdateSealTimerText(now)
     return true
 end
 
+local nativeSealContainer = nil
+local nativeEchoContainer = nil
+local nativePendingRebuild = false
+local nativeRebuildQueued = false
+
+local function HasNativeAuraContainer()
+    return CustomAuraContainerAuraProcessingPolicy ~= nil and C_AuraContainerUtil ~= nil
+end
+
+local function CreateNumericFormatter(breakpoints)
+    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+    local ok, f = pcall(function()
+        local created = C_StringUtil.CreateNumericRuleFormatter()
+        created:SetBreakpoints(breakpoints)
+        return created
+    end)
+    return ok and f or nil
+end
+
+local function BuildNativePaladinAuras()
+    if not clockFrame or not clockFrame.sealBox or not clockFrame.echoBox then return false end
+    if not isPaladinClass or not HasNativeAuraContainer() then return false end
+    if InCombatLockdown and InCombatLockdown() then
+        nativePendingRebuild = true
+        return false
+    end
+    nativePendingRebuild = false
+
+    if nativeSealContainer then
+        pcall(nativeSealContainer.SetEnabled, nativeSealContainer, false)
+        pcall(nativeSealContainer.Hide, nativeSealContainer)
+        nativeSealContainer = nil
+    end
+    if nativeEchoContainer then
+        pcall(nativeEchoContainer.SetEnabled, nativeEchoContainer, false)
+        pcall(nativeEchoContainer.Hide, nativeEchoContainer)
+        nativeEchoContainer = nil
+    end
+
+    local sz = (db and db.size) or DEFAULTS.size
+    local boxSz = Clamp(math.floor(sz * 0.50 + 0.5), 16, 160)
+    local innerBoxSz = math.floor(boxSz * 0.80 + 0.5)
+    local pipOrbSz = Clamp(math.floor(boxSz * 0.32 + 0.5), 10, 52)
+    local pipFillSz = math.floor(pipOrbSz * 0.72 + 0.5)
+    local pipStepY = math.floor(boxSz * 0.29 + 0.5)
+
+    local sb = clockFrame.sealBox
+    local eb = clockFrame.echoBox
+
+    local sealFilterIDs = {}
+    for id in pairs(SEAL_SPELL_IDS) do
+        if not SEAL_PROC_SPELL_IDS[id] then
+            sealFilterIDs[id] = true
+        end
+    end
+
+    local up = Enum and Enum.NumericRuleFormatRounding and Enum.NumericRuleFormatRounding.Up
+    local timerFmt = CreateNumericFormatter({
+        { threshold = 0, format = "%ds", step = 1, rounding = up },
+        { threshold = 60, format = "%d:%02d", step = 1, rounding = up,
+          components = { { div = 60 }, { mod = 60 } } },
+    })
+
+    if sb.nativeWrap then
+        pcall(function()
+            local c = CreateFrame("AuraContainer", nil, sb.nativeWrap, "CustomAuraContainerTemplate")
+            c:SetEnabled(false)
+            c:SetAuraProcessingPolicy(CustomAuraContainerAuraProcessingPolicy.None)
+            c:SetPoint("TOPLEFT", sb, "TOPLEFT")
+            c:SetUnit("player")
+            c:AddAuraSlot("Seal", "HELPFUL", {
+                candidateFilters = { includeSpellIDs = sealFilterIDs },
+                initializeFrame = function(button)
+                    button:EnableMouse(false)
+                    button:ClearAllPoints()
+                    button:SetAllPoints(sb)
+                    button:SetFrameLevel(sb:GetFrameLevel() + 2)
+
+                    local icon = button:CreateTexture(nil, "ARTWORK")
+                    icon:SetSize(innerBoxSz, innerBoxSz)
+                    icon:SetPoint("CENTER", sb, "CENTER", 0, 0)
+                    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+                    button:SetIcon(icon)
+
+                    local overlay = CreateFrame("Frame", nil, button)
+                    overlay:SetAllPoints(sb)
+                    overlay:SetFrameLevel(sb:GetFrameLevel() + 5)
+                    local timer = overlay:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                    timer:SetPoint("TOP", sb, "BOTTOM", 0, -3)
+                    timer:SetJustifyH("CENTER")
+                    timer:SetTextColor(1, 0.88, 0.35, 1)
+
+                    if not (timerFmt and pcall(button.SetDurationText, button, timer, { textFormatter = timerFmt })) then
+                        pcall(button.SetDurationText, button, timer, {})
+                    end
+                end,
+            })
+            c:SetAuraSlotEnabled("Seal", true)
+            c:SetEnabled(true)
+            nativeSealContainer = c
+        end)
+    end
+
+    if hasUnsealedWrath and eb.nativeWrap then
+        local echoFilterIDs = {}
+        for id in pairs(ECHO_SPELL_IDS) do
+            echoFilterIDs[id] = true
+        end
+
+        local rc = (db and db.readyColor) or DEFAULTS.readyColor
+        local r = math.floor(Clamp(rc.r + 0.04, 0, 1) * 255 + 0.5)
+        local g = math.floor(Clamp(rc.g + 0.14, 0, 1) * 255 + 0.5)
+        local b = math.floor(Clamp(rc.b + 0.06, 0, 1) * 255 + 0.5)
+        local dot = ("|T%s:%d:%d:0:0:64:64:0:64:0:64:%d:%d:%d|t"):format(TEX_DISC, pipFillSz, pipFillSz, r, g, b)
+        local pipsFmt = CreateNumericFormatter({
+            { threshold = 0, format = "" },
+            { threshold = 1, format = dot },
+            { threshold = 2, format = dot .. "\n" .. dot },
+            { threshold = 3, format = dot .. "\n" .. dot .. "\n" .. dot },
+        })
+
+        pcall(function()
+            local c = CreateFrame("AuraContainer", nil, eb.nativeWrap, "CustomAuraContainerTemplate")
+            c:SetEnabled(false)
+            c:SetAuraProcessingPolicy(CustomAuraContainerAuraProcessingPolicy.None)
+            c:SetPoint("TOPLEFT", eb, "TOPLEFT")
+            c:SetUnit("player")
+            c:AddAuraSlot("Echo", "HELPFUL", {
+                candidateFilters = { includeSpellIDs = echoFilterIDs },
+                initializeFrame = function(button)
+                    button:EnableMouse(false)
+                    button:ClearAllPoints()
+                    button:SetAllPoints(eb)
+                    button:SetFrameLevel(eb:GetFrameLevel() + 2)
+
+                    local icon = button:CreateTexture(nil, "ARTWORK")
+                    icon:SetSize(innerBoxSz, innerBoxSz)
+                    icon:SetPoint("CENTER", eb, "CENTER", 0, 0)
+                    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+                    button:SetIcon(icon)
+
+                    if eb.pips and eb.pips[1] then
+                        local pipOverlay = CreateFrame("Frame", nil, button)
+                        pipOverlay:SetAllPoints(eb)
+                        pipOverlay:SetFrameLevel(eb:GetFrameLevel() + 5)
+
+                        local pipFS = pipOverlay:CreateFontString(nil, "OVERLAY")
+                        pipFS:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", pipFillSz, "")
+                        pipFS:SetJustifyH("CENTER")
+                        pipFS:SetJustifyV("TOP")
+                        pipFS:SetSpacing(math.max(0, pipStepY - pipFillSz))
+                        pipFS:SetPoint("TOP", eb.pips[1], "CENTER", 0, math.floor(pipFillSz * 0.5 + 0.5))
+
+                        if not (pipsFmt and pcall(button.SetApplicationCount, button, pipFS, { formatter = pipsFmt })) then
+                            pcall(button.SetApplicationCount, button, pipFS, {})
+                        end
+                    end
+                end,
+            })
+            c:SetAuraSlotEnabled("Echo", true)
+            c:SetEnabled(true)
+            nativeEchoContainer = c
+        end)
+    end
+    return true
+end
+
+local function QueueNativeAuraRebuild()
+    if not isPaladinClass or not HasNativeAuraContainer() then return end
+    nativePendingRebuild = true
+    if InCombatLockdown and InCombatLockdown() then return end
+    if nativeRebuildQueued then return end
+    nativeRebuildQueued = true
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0.15, function()
+            nativeRebuildQueued = false
+            if nativePendingRebuild then
+                BuildNativePaladinAuras()
+            end
+        end)
+    else
+        nativeRebuildQueued = false
+        BuildNativePaladinAuras()
+    end
+end
+
 UpdatePaladinUI = function()
     if not clockFrame or not clockFrame.sealBox or not clockFrame.echoBox then return end
     local showSealBox = isPaladinClass or testPaladinPreview
     local showEchoBox = (isPaladinClass and hasUnsealedWrath) or testPaladinPreview
+    local useNative = isPaladinClass and not testPaladinPreview and HasNativeAuraContainer()
 
     -- 1. Left Box: Active Seal (Paladin only)
     local sb = clockFrame.sealBox
     if showSealBox then
         sb:Show()
-        if sealState.active and sealState.icon then
-            sb.iconTex:SetTexture(sealState.icon)
-            sb.iconTex:SetVertexColor(1, 1, 1, 1)
-            sb.iconTex:Show()
-        else
+        if sb.nativeWrap then sb.nativeWrap:SetAlpha(useNative and 1 or 0) end
+        if useNative then
             sb.iconTex:Hide()
+            sb.timerText:SetText("")
+        else
+            if sealState.active and sealState.icon then
+                sb.iconTex:SetTexture(sealState.icon)
+                sb.iconTex:SetVertexColor(1, 1, 1, 1)
+                sb.iconTex:Show()
+            else
+                sb.iconTex:Hide()
+            end
+            UpdateSealTimerText(GetTime())
         end
-        UpdateSealTimerText(GetTime())
     else
         sb:Hide()
     end
@@ -1293,30 +1486,38 @@ UpdatePaladinUI = function()
     local eb = clockFrame.echoBox
     if showEchoBox then
         eb:Show()
-        local stacks = (echoState.active and echoState.stacks) and Clamp(echoState.stacks, 0, MAX_ECHO_STACKS) or 0
-        if echoState.active and stacks > 0 and echoState.icon then
-            eb.iconTex:SetTexture(echoState.icon)
-            eb.iconTex:SetVertexColor(1, 1, 1, 1)
-            eb.iconTex:Show()
-        else
+        if eb.nativeWrap then eb.nativeWrap:SetAlpha(useNative and 1 or 0) end
+        if useNative then
             eb.iconTex:Hide()
-            stacks = 0
-        end
+            for i = 1, MAX_ECHO_STACKS do
+                if eb.pips[i] then eb.pips[i].fillTex:Hide() end
+            end
+        else
+            local stacks = (echoState.active and echoState.stacks) and Clamp(echoState.stacks, 0, MAX_ECHO_STACKS) or 0
+            if echoState.active and stacks > 0 and echoState.icon then
+                eb.iconTex:SetTexture(echoState.icon)
+                eb.iconTex:SetVertexColor(1, 1, 1, 1)
+                eb.iconTex:Show()
+            else
+                eb.iconTex:Hide()
+                stacks = 0
+            end
 
-        local rc = (db and db.readyColor) or DEFAULTS.readyColor
-        for i = 1, MAX_ECHO_STACKS do
-            local pip = eb.pips[i]
-            if pip then
-                if i <= stacks then
-                    pip.fillTex:SetVertexColor(
-                        Clamp(rc.r + 0.04, 0, 1),
-                        Clamp(rc.g + 0.14, 0, 1),
-                        Clamp(rc.b + 0.06, 0, 1),
-                        0.96
-                    )
-                    pip.fillTex:Show()
-                else
-                    pip.fillTex:Hide()
+            local rc = (db and db.readyColor) or DEFAULTS.readyColor
+            for i = 1, MAX_ECHO_STACKS do
+                local pip = eb.pips[i]
+                if pip then
+                    if i <= stacks then
+                        pip.fillTex:SetVertexColor(
+                            Clamp(rc.r + 0.04, 0, 1),
+                            Clamp(rc.g + 0.14, 0, 1),
+                            Clamp(rc.b + 0.06, 0, 1),
+                            0.96
+                        )
+                        pip.fillTex:Show()
+                    else
+                        pip.fillTex:Hide()
+                    end
                 end
             end
         end
@@ -1626,6 +1827,10 @@ local function ApplyClockLayout()
                 pip.fillTex:SetSize(pipFillSz, pipFillSz)
             end
         end
+    end
+
+    if isPaladinClass and HasNativeAuraContainer() then
+        QueueNativeAuraRebuild()
     end
 
     -- Lock / click-through handling via dedicated top-level dragOverlay
@@ -2038,7 +2243,15 @@ local function CreateClockFrame()
     sbIcon:Hide()
     sealBox.iconTex = sbIcon
 
-    local sbBezel = sealBox:CreateTexture(nil, "OVERLAY", nil, 1)
+    local sbNativeWrap = CreateFrame("Frame", nil, sealBox)
+    sbNativeWrap:SetAllPoints(sealBox)
+    sbNativeWrap:SetFrameLevel(baseLevel + 3)
+    sealBox.nativeWrap = sbNativeWrap
+
+    local sbBezelFrame = CreateFrame("Frame", nil, sealBox)
+    sbBezelFrame:SetAllPoints(sealBox)
+    sbBezelFrame:SetFrameLevel(baseLevel + 6)
+    local sbBezel = sbBezelFrame:CreateTexture(nil, "OVERLAY", nil, 1)
     sbBezel:SetAllPoints(sealBox)
     sbBezel:SetTexture(TEX_SEAL_BOX)
     sealBox.bezelTex = sbBezel
@@ -2049,11 +2262,11 @@ local function CreateClockFrame()
     sbTimer:SetText("")
     sealBox.timerText = sbTimer
 
-    -- Dedicated real-time countdown ticker on sealBox so the Seal timer always updates every second
-    -- regardless of whether a weapon swing is active
+    -- Dedicated real-time countdown ticker on sealBox (fallback only when AuraContainer is unavailable)
     local sealTickAccum = 0
     local auraPollAccum = 0
     sealBox:SetScript("OnUpdate", function(_, elapsed)
+        if isPaladinClass and not testPaladinPreview and HasNativeAuraContainer() then return end
         sealTickAccum = sealTickAccum + (elapsed or 0)
         auraPollAccum = auraPollAccum + (elapsed or 0)
         if sealTickAccum >= 0.08 then
@@ -2092,7 +2305,15 @@ local function CreateClockFrame()
     ebIcon:Hide()
     echoBox.iconTex = ebIcon
 
-    local ebBezel = echoBox:CreateTexture(nil, "OVERLAY", nil, 1)
+    local ebNativeWrap = CreateFrame("Frame", nil, echoBox)
+    ebNativeWrap:SetAllPoints(echoBox)
+    ebNativeWrap:SetFrameLevel(baseLevel + 3)
+    echoBox.nativeWrap = ebNativeWrap
+
+    local ebBezelFrame = CreateFrame("Frame", nil, echoBox)
+    ebBezelFrame:SetAllPoints(echoBox)
+    ebBezelFrame:SetFrameLevel(baseLevel + 6)
+    local ebBezel = ebBezelFrame:CreateTexture(nil, "OVERLAY", nil, 1)
     ebBezel:SetAllPoints(echoBox)
     ebBezel:SetTexture(TEX_SEAL_BOX)
     echoBox.bezelTex = ebBezel
@@ -2100,7 +2321,7 @@ local function CreateClockFrame()
     echoBox.pips = {}
     for i = 1, MAX_ECHO_STACKS do
         local pip = CreateFrame("Frame", nil, echoBox)
-        pip:SetFrameLevel(baseLevel + 5)
+        pip:SetFrameLevel(baseLevel + 4)
         pip:EnableMouse(false)
 
         local pBg = pip:CreateTexture(nil, "BACKGROUND", nil, 0)
@@ -2116,7 +2337,10 @@ local function CreateClockFrame()
         pFill:Hide()
         pip.fillTex = pFill
 
-        local pRing = pip:CreateTexture(nil, "OVERLAY", nil, 1)
+        local pRingFrame = CreateFrame("Frame", nil, pip)
+        pRingFrame:SetAllPoints(pip)
+        pRingFrame:SetFrameLevel(baseLevel + 8)
+        local pRing = pRingFrame:CreateTexture(nil, "OVERLAY", nil, 1)
         pRing:SetAllPoints(pip)
         pRing:SetTexture(TEX_PIP_RING)
         pip.ringTex = pRing
@@ -2303,7 +2527,7 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
         end
         StartSwing(slot, dur, true)
 
-        if isPaladinClass and hasUnsealedWrath and not testPaladinPreview then
+        if isPaladinClass and hasUnsealedWrath and not testPaladinPreview and not HasNativeAuraContainer() then
             if slot == SWING_MH then
                 local now = GetTime()
                 lastMHSwingTime = now
@@ -2563,6 +2787,9 @@ function handlers.CHARACTER_POINTS_CHANGED()
     if isPaladinClass then
         RefreshPaladinStatus()
         ApplyClockLayout()
+        if nativePendingRebuild then
+            BuildNativePaladinAuras()
+        end
     end
 end
 
@@ -2570,6 +2797,9 @@ function handlers.PLAYER_TALENT_UPDATE()
     if isPaladinClass then
         RefreshPaladinStatus()
         ApplyClockLayout()
+        if nativePendingRebuild then
+            BuildNativePaladinAuras()
+        end
     end
 end
 
@@ -2577,6 +2807,9 @@ function handlers.SPELLS_CHANGED()
     if isPaladinClass then
         RefreshPaladinStatus()
         ApplyClockLayout()
+        if nativePendingRebuild then
+            BuildNativePaladinAuras()
+        end
     end
 end
 
@@ -2584,6 +2817,9 @@ function handlers.TRAIT_CONFIG_UPDATED()
     if isPaladinClass then
         RefreshPaladinStatus()
         ApplyClockLayout()
+        if nativePendingRebuild then
+            BuildNativePaladinAuras()
+        end
     end
 end
 
@@ -2591,6 +2827,9 @@ function handlers.ACTIVE_TALENT_GROUP_CHANGED()
     if isPaladinClass then
         RefreshPaladinStatus()
         ApplyClockLayout()
+        if nativePendingRebuild then
+            BuildNativePaladinAuras()
+        end
     end
 end
 
@@ -2598,6 +2837,9 @@ function handlers.PLAYER_LEVEL_UP()
     if isPaladinClass then
         RefreshPaladinStatus()
         ApplyClockLayout()
+        if nativePendingRebuild then
+            BuildNativePaladinAuras()
+        end
     end
 end
 
@@ -2614,6 +2856,9 @@ function handlers.PLAYER_REGEN_ENABLED()
     if isPaladinClass then
         RefreshPaladinStatus()
         ApplyClockLayout()
+        if nativePendingRebuild then
+            BuildNativePaladinAuras()
+        end
     end
     RefreshVisibility()
 end
