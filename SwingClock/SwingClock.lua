@@ -326,14 +326,16 @@ local function ApplyCombatEchoSwingHit()
     if (now - lastTargetAvoidTime) < 0.25 then return end
 
     if echoState.active and (not sealState.active or sealState.icon ~= echoState.icon) then
-        -- Landing an attack with a different Seal (or without that Seal) consumes all stored Echo stacks & clears pips
+        -- Landing an attack with a different Seal (or without that Seal) consumes all stored Echo stacks
         echoState.active = false
         echoState.stacks = 0
         echoState.icon = nil
         echoState.spellID = nil
         echoState.duration = 0
         echoState.expirationTime = 0
-    elseif sealState.active and sealState.icon then
+    end
+
+    if sealState.active and sealState.icon then
         if not echoState.active then
             echoState.active = true
             echoState.icon = sealState.icon
