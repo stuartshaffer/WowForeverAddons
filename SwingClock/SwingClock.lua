@@ -141,6 +141,7 @@ local testPaladinPreview = false
 local isPaladinClass = false
 local hasUnsealedWrath = false
 local hasShieldSpecialization = false
+local shieldSpecRank = 0
 local hasShieldsworn = false
 local shieldSpecIcon = 134952 -- INV_Shield_06 fallback
 local shieldSpecCDStart = 0
@@ -149,6 +150,9 @@ local holyStrikeCDDuration = 4.5
 local SHIELD_SPEC_ICD = 3.0
 local shieldBoxLastStart = -1
 local shieldBoxLastDur = -1
+local cachedPlayerMaxMana = 0
+local pendingManaSnapshot = nil
+local pendingManaRefillToken = 0
 local dragState = { active = false, startCurX = 0, startCurY = 0, startOffX = 0, startOffY = 0 }
 
 local mhState = { active = false, startTime = 0, duration = 0, speed = 0, pulseTime = -1 }
@@ -721,6 +725,7 @@ local function ScanTraitConfigForPaladinTalents(configID)
                             elseif lower == "shield specialization" then
                                 if rank > 0 then
                                     shieldSpecLearned = true
+                                    if rank > shieldSpecRank then shieldSpecRank = rank end
                                     if spID and C_Spell and C_Spell.GetSpellTexture then
                                         local okT, tex = pcall(C_Spell.GetSpellTexture, spID)
                                         if okT and not IsSecret(tex) and tex then detectedShieldIcon = tex end
@@ -1182,11 +1187,19 @@ RefreshPaladinStatus = function()
     isPaladinClass = DetectPlayerIsPaladin()
     if isPaladinClass then
         HarvestKnownPaladinSeals()
+        shieldSpecRank = 0
         local unsealed, shieldSpec, shieldsworn, detShieldIcon = DetectPaladinTalents()
         hasUnsealedWrath = unsealed
         hasShieldSpecialization = shieldSpec
         hasShieldsworn = shieldsworn
+        if hasShieldSpecialization and shieldSpecRank == 0 then shieldSpecRank = 2 end
         if detShieldIcon then shieldSpecIcon = detShieldIcon end
+        if UnitPowerMax then
+            local okM, maxM = pcall(UnitPowerMax, "player", 0)
+            if okM and not IsSecret(maxM) and type(maxM) == "number" and maxM > 0 then
+                cachedPlayerMaxMana = maxM
+            end
+        end
         holyStrikeCDDuration = hasShieldsworn and 4.5 or 6.0
         if GetSpellBaseCooldown then
             for hsID in pairs(HOLY_STRIKE_SPELL_IDS) do
@@ -2517,6 +2530,49 @@ local function CreateClockFrame()
     shTimer:SetText("Ready")
     shieldBox.timerText = shTimer
 
+    -- Pooled floating combat text next to shieldBox for mana refilled
+    shieldBox.manaPopups = {}
+    for i = 1, 3 do
+        local pf = CreateFrame("Frame", nil, shieldBox)
+        pf:SetSize(80, 20)
+        pf:SetPoint("LEFT", shieldBox, "RIGHT", 6, 0)
+        pf:SetFrameLevel(baseLevel + 8)
+        pf:Hide()
+
+        local fs = pf:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        fs:SetPoint("LEFT", pf, "LEFT", 0, 0)
+        fs:SetJustifyH("LEFT")
+        fs:SetTextColor(0.35, 0.78, 1.0, 1)
+        if fs.SetShadowOffset then fs:SetShadowOffset(1, -1) end
+        pf.text = fs
+
+        local ag = pf:CreateAnimationGroup()
+        local fadeIn = ag:CreateAnimation("Alpha")
+        fadeIn:SetFromAlpha(0)
+        fadeIn:SetToAlpha(1)
+        fadeIn:SetDuration(0.10)
+        fadeIn:SetOrder(1)
+
+        local move = ag:CreateAnimation("Translation")
+        move:SetOffset(0, 22)
+        move:SetDuration(1.05)
+        move:SetOrder(2)
+
+        local fadeOut = ag:CreateAnimation("Alpha")
+        fadeOut:SetFromAlpha(1)
+        fadeOut:SetToAlpha(0)
+        fadeOut:SetDuration(1.05)
+        fadeOut:SetStartDelay(0.25)
+        fadeOut:SetOrder(2)
+
+        ag:SetScript("OnFinished", function()
+            pf:Hide()
+        end)
+        pf.anim = ag
+        shieldBox.manaPopups[i] = pf
+    end
+    shieldBox.manaPopupIdx = 0
+
     local shieldTickAccum = 0
     shieldBox:SetScript("OnUpdate", function(_, elapsed)
         shieldTickAccum = shieldTickAccum + (elapsed or 0)
@@ -2814,6 +2870,68 @@ function handlers.UNIT_ATTACK_SPEED(unit)
     end
 end
 
+local function ShowShieldManaPopup(amount)
+    if not clockFrame or not clockFrame.shieldBox or not clockFrame.shieldBox:IsShown() then return end
+    if not amount or amount <= 0 then return end
+    local shb = clockFrame.shieldBox
+    if not shb.manaPopups then return end
+    shb.manaPopupIdx = (shb.manaPopupIdx % #shb.manaPopups) + 1
+    local pf = shb.manaPopups[shb.manaPopupIdx]
+    if pf.anim and pf.anim:IsPlaying() then
+        pf.anim:Stop()
+    end
+    pf.text:SetText(("+%d"):format(amount))
+    pf:Show()
+    if pf.anim then
+        pf.anim:Play()
+    end
+end
+
+local function QueueShieldManaRefillPopup()
+    if not isPaladinClass or hasUnsealedWrath or not (hasShieldSpecialization or hasShieldsworn) then return end
+    local snap = nil
+    if UnitPower then
+        local okP, curP = pcall(UnitPower, "player", 0)
+        if okP and not IsSecret(curP) and type(curP) == "number" then
+            snap = curP
+        end
+    end
+    pendingManaSnapshot = snap
+    pendingManaRefillToken = pendingManaRefillToken + 1
+    local myToken = pendingManaRefillToken
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0.16, function()
+            if pendingManaRefillToken ~= myToken then return end
+            pendingManaSnapshot = nil
+            if cachedPlayerMaxMana > 0 then
+                local rank = (shieldSpecRank and shieldSpecRank > 0) and shieldSpecRank or 2
+                local est = math.floor(cachedPlayerMaxMana * (0.02 * rank) + 0.5)
+                ShowShieldManaPopup(est)
+            end
+        end)
+    elseif cachedPlayerMaxMana > 0 then
+        local rank = (shieldSpecRank and shieldSpecRank > 0) and shieldSpecRank or 2
+        ShowShieldManaPopup(math.floor(cachedPlayerMaxMana * (0.02 * rank) + 0.5))
+    end
+end
+
+function handlers.UNIT_POWER_UPDATE(unit, powerType)
+    if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
+    if not IsSecret(powerType) and powerType ~= "MANA" then return end
+    if pendingManaSnapshot == nil then return end
+    if UnitPower then
+        local okP, curP = pcall(UnitPower, "player", 0)
+        if okP and not IsSecret(curP) and type(curP) == "number" then
+            local delta = curP - pendingManaSnapshot
+            if delta > 0 then
+                pendingManaSnapshot = nil
+                pendingManaRefillToken = pendingManaRefillToken + 1
+                ShowShieldManaPopup(delta)
+            end
+        end
+    end
+end
+
 -- Classic / Forever Parry Haste + Target Miss/Parry/Dodge cancellation for Unsealed Wrath
 function handlers.UNIT_COMBAT(unit, action)
     if not db or not db.enabled then return end
@@ -2832,6 +2950,7 @@ function handlers.UNIT_COMBAT(unit, action)
             local now = GetTime()
             if now >= (shieldSpecCDStart + SHIELD_SPEC_ICD) then
                 shieldSpecCDStart = now
+                QueueShieldManaRefillPopup()
             end
         end
     end
@@ -2952,6 +3071,7 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
             MarkHolyStrikeCast()
             if hasShieldsworn then
                 holyStrikeCDStart = now
+                QueueShieldManaRefillPopup()
             end
             if debugMode then DebugLog(("SPELLCAST HolyStrike (%d)"):format(spellID)) end
             return
