@@ -268,10 +268,9 @@ local pendingSealCast = nil
 local prevSealSnapshot = nil
 local paladinHooksInstalled = false
 local lastHolyStrikeTime = 0
+local lastTargetAvoidTime = 0
 local lastKnownBuffCount = nil
-local pendingEchoSwingTime = nil
-local pendingEchoAuraTime = nil
-local pendingEchoAuraDelta = 0
+local pendingEchoSwingToken = 0
 
 local function FallbackIconForAura(name, spellID)
     if spellID then
@@ -315,8 +314,7 @@ end
 
 local function MarkHolyStrikeCast()
     lastHolyStrikeTime = GetTime()
-    pendingEchoSwingTime = nil
-    pendingEchoAuraTime = nil
+    pendingEchoSwingToken = pendingEchoSwingToken + 1
 end
 
 local function CountPlayerHelpfulBuffSlots()
@@ -344,31 +342,22 @@ local function CountPlayerHelpfulBuffSlots()
     return count
 end
 
--- Applies an Echo buff change confirmed by UNIT_AURA("player") paired with a landed white MH swing
--- when C_UnitAuras aura fields are secret in combat.
-local function ApplyCombatEchoAuraUpdate(deltaBuffs)
+-- Applies a landed white MH swing to Unsealed Wrath Echo stacks in combat when C_UnitAuras is secret.
+-- (Filtered to exclude Holy Strike and target MISS/PARRY/DODGE/EVADE/IMMUNE.)
+local function ApplyCombatEchoSwingHit()
     if not isPaladinClass or not hasUnsealedWrath or testPaladinPreview then return end
     local now = GetTime()
-    if (now - lastHolyStrikeTime) < 0.30 then return end
+    if (now - lastHolyStrikeTime) < 0.35 then return end
+    if (now - lastTargetAvoidTime) < 0.25 then return end
 
     if echoState.active and (not sealState.active or sealState.icon ~= echoState.icon) then
-        -- Landed a white melee attack without the stored Echo Seal active -> stored Echo stacks are consumed
-        if (deltaBuffs and deltaBuffs < 0) or not sealState.active or not sealState.icon then
-            echoState.active = false
-            echoState.stacks = 0
-            echoState.icon = nil
-            echoState.spellID = nil
-            echoState.duration = 0
-            echoState.expirationTime = 0
-        else
-            -- Stored Echo buff was replaced by 1 stack of the currently active Seal's Echo
-            echoState.active = true
-            echoState.icon = sealState.icon
-            echoState.spellID = sealState.spellID
-            echoState.stacks = 1
-            echoState.duration = 30
-            echoState.expirationTime = now + 30
-        end
+        -- Landing an attack with a different Seal (or without that Seal) consumes all stored Echo stacks & clears pips
+        echoState.active = false
+        echoState.stacks = 0
+        echoState.icon = nil
+        echoState.spellID = nil
+        echoState.duration = 0
+        echoState.expirationTime = 0
     elseif sealState.active and sealState.icon then
         if not echoState.active then
             echoState.active = true
@@ -378,16 +367,9 @@ local function ApplyCombatEchoAuraUpdate(deltaBuffs)
             echoState.duration = 30
             echoState.expirationTime = now + 30
         elseif echoState.icon == sealState.icon then
-            if deltaBuffs and deltaBuffs < 0 then
-                echoState.active = false
-                echoState.stacks = 0
-                echoState.icon = nil
-                echoState.spellID = nil
-            else
-                echoState.stacks = Clamp((echoState.stacks or 1) + 1, 1, MAX_ECHO_STACKS)
-                echoState.duration = 30
-                echoState.expirationTime = now + 30
-            end
+            echoState.stacks = Clamp((echoState.stacks or 1) + 1, 1, MAX_ECHO_STACKS)
+            echoState.duration = 30
+            echoState.expirationTime = now + 30
         end
     end
     if UpdatePaladinUI then UpdatePaladinUI() end
@@ -1160,9 +1142,9 @@ RefreshPaladinAuras = function()
         end
         echoState.spellID = eID
         echoState.auraInstanceID = eInstID
-    elseif sawSecretAura and echoState.active and (not echoState.expirationTime or echoState.expirationTime <= 0 or echoState.expirationTime > now) then
+    elseif (sawSecretAura or inCombat) and echoState.active and (not echoState.expirationTime or echoState.expirationTime <= 0 or echoState.expirationTime > now) then
         -- Preserve active Echo buff state while C_UnitAuras is secret in combat;
-        -- combat updates come from UNIT_AURA / CLEU buff events
+        -- combat updates come from landed white swings (excluding Holy Strike and misses/parries/dodges)
         echoState.active = true
     else
         echoState.active = false
@@ -2368,19 +2350,21 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
         if isPaladinClass and hasUnsealedWrath and not testPaladinPreview then
             if slot == SWING_MH then
                 local now = GetTime()
-                if (now - lastHolyStrikeTime) < 0.30 then
-                    -- Holy Strike never adds an Echo stack
-                    pendingEchoSwingTime = nil
-                    pendingEchoAuraTime = nil
-                elseif pendingEchoAuraTime and (now - pendingEchoAuraTime) < 0.18 then
-                    -- UNIT_AURA("player") already fired on this combat tick for the landed white swing
-                    local delta = pendingEchoAuraDelta
-                    pendingEchoAuraTime = nil
-                    pendingEchoAuraDelta = 0
-                    ApplyCombatEchoAuraUpdate(delta)
-                else
-                    -- Wait for UNIT_AURA("player") to confirm the white swing actually landed & updated the Echo buff
-                    pendingEchoSwingTime = now
+                if (now - lastHolyStrikeTime) >= 0.35 and (now - lastTargetAvoidTime) >= 0.20 then
+                    pendingEchoSwingToken = pendingEchoSwingToken + 1
+                    local myToken = pendingEchoSwingToken
+                    if C_Timer and C_Timer.After then
+                        -- Defer 0.08s so same-frame Holy Strike (UNIT_SPELLCAST_SUCCEEDED) or
+                        -- target MISS/PARRY/DODGE (UNIT_COMBAT) cancels this swing before it updates Echo stacks
+                        C_Timer.After(0.08, function()
+                            if pendingEchoSwingToken == myToken then
+                                ApplyCombatEchoSwingHit()
+                                RefreshPaladinAuras()
+                            end
+                        end)
+                    else
+                        ApplyCombatEchoSwingHit()
+                    end
                 end
             end
             RefreshPaladinAuras()
@@ -2431,9 +2415,9 @@ function handlers.UNIT_COMBAT(unit, action)
 
     if isPaladinClass and unit == "target" then
         if action == "MISS" or action == "PARRY" or action == "DODGE" or action == "EVADE"
-            or action == "IMMUNE" or action == "DEFLECT" then
-            pendingEchoSwingTime = nil
-            pendingEchoAuraTime = nil
+            or action == "IMMUNE" or action == "DEFLECT" or action == "ABSORB" then
+            lastTargetAvoidTime = GetTime()
+            pendingEchoSwingToken = pendingEchoSwingToken + 1
         end
     end
 
@@ -2496,42 +2480,7 @@ function handlers.UNIT_AURA(unit)
     if not isPaladinClass then return end
 
     local newBuffCount = CountPlayerHelpfulBuffSlots()
-    local prevBuffCount = lastKnownBuffCount or newBuffCount
-    local deltaBuffs = newBuffCount - prevBuffCount
     lastKnownBuffCount = newBuffCount
-
-    local now = GetTime()
-    if hasUnsealedWrath and not testPaladinPreview then
-        local justCastSeal = sealState.lastCastTime and (now - sealState.lastCastTime) < 0.20 and not pendingEchoSwingTime
-        local justUsedHolyStrike = (now - lastHolyStrikeTime) < 0.30
-        if not justCastSeal and not justUsedHolyStrike then
-            if pendingEchoSwingTime and (now - pendingEchoSwingTime) < 0.25 then
-                -- Confirmed: white MH swing landed and triggered a player aura update!
-                pendingEchoSwingTime = nil
-                pendingEchoAuraTime = nil
-                ApplyCombatEchoAuraUpdate(deltaBuffs)
-            else
-                pendingEchoAuraTime = now
-                pendingEchoAuraDelta = deltaBuffs
-                if deltaBuffs < 0 and echoState.active and C_Timer and C_Timer.After then
-                    local checkTime = now
-                    C_Timer.After(0.08, function()
-                        if pendingEchoAuraTime == checkTime then
-                            pendingEchoAuraTime = nil
-                            if echoState.active and sealState.active and sealState.expirationTime and (sealState.expirationTime - GetTime()) > 1.0 then
-                                echoState.active = false
-                                echoState.stacks = 0
-                                echoState.icon = nil
-                                echoState.spellID = nil
-                                if UpdatePaladinUI then UpdatePaladinUI() end
-                            end
-                        end
-                    end)
-                end
-            end
-        end
-    end
-
     RefreshPaladinAuras()
 end
 
@@ -2553,7 +2502,7 @@ end
 function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
     if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
     local now = GetTime()
-    if not IsSecret(spellID) and type(spellID) == "number" then
+    if not IsSecret(spellID) and type(spellID) and type(spellID) == "number" then
         if IsHolyStrikeSpell(spellID, nil) then
             MarkHolyStrikeCast()
             return
@@ -2653,8 +2602,7 @@ function handlers.PLAYER_REGEN_DISABLED()
 end
 
 function handlers.PLAYER_REGEN_ENABLED()
-    pendingEchoSwingTime = nil
-    pendingEchoAuraTime = nil
+    pendingEchoSwingToken = pendingEchoSwingToken + 1
     if pendingCVars then
         pendingCVars = false
         ApplyBlizzardBarCVar()
@@ -2702,8 +2650,7 @@ function handlers.COMBAT_LOG_EVENT_UNFILTERED()
             local isEcho = (spID and ECHO_SPELL_IDS[spID] ~= nil)
                 or (type(spName) == "string" and spName:lower():find("^echo of ") ~= nil)
             if isEcho then
-                pendingEchoSwingTime = nil
-                pendingEchoAuraTime = nil
+                pendingEchoSwingToken = pendingEchoSwingToken + 1
                 local now = GetTime()
                 if subevent == "SPELL_AURA_REMOVED" then
                     if not echoState.spellID or not spID or echoState.spellID == spID then
