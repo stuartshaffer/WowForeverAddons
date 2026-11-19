@@ -58,7 +58,7 @@ local SEAL_SPELL_IDS = {
     [1311652] = 135957, [1311653] = 135957, [1311654] = 135957, [1311655] = 135957,
     [1311656] = 135957, [1311657] = 135957, [1311658] = 135957, [1311659] = 135957, [1311660] = 135957,
     [21082] = 135957, [20162] = 135957, [20305] = 135957, [20306] = 135957, [20307] = 135957, [20308] = 135957,
-    [27158] = 135957,
+    [27158] = 135957, [20163] = 135957, [20232] = 135957, [20419] = 135957, [20421] = 135957, [20422] = 135957, [20423] = 135957,
     -- Seal of Justice
     [20164] = 135971, [31895] = 135971,
     -- Seal of Light
@@ -70,10 +70,14 @@ local SEAL_SPELL_LIST = {
     20154, 21084, 20287, 20288, 20289, 20290, 20291, 20292, 20293, 25742, 25740, 25713,
     20375, 20915, 20918, 20919, 20920, 20424, 27170,
     1311649, 1311648, 1311650, 1311651, 1311652, 1311653, 1311654, 1311655, 1311656, 1311657, 1311658, 1311659, 1311660,
-    21082, 20162, 20305, 20306, 20307, 20308, 27158,
+    21082, 20162, 20305, 20306, 20307, 20308, 27158, 20163, 20232, 20419, 20421, 20422, 20423,
     20164, 31895,
     20165, 20347, 20348, 20349, 27160,
     20166, 20356, 20357, 27166,
+}
+local HOLY_STRIKE_SPELL_IDS = {
+    [678] = true, [679] = true, [680] = true, [1866] = true,
+    [2495] = true, [5569] = true, [10332] = true, [10333] = true,
 }
 local SEAL_NAMES_LIST = {
     "Seal of Righteousness",
@@ -259,11 +263,15 @@ local SEAL_NAME_ICONS = {
 }
 
 local UNSEALED_WRATH_DEF_ID = 273096
-local JUDGEMENT_SPELL_ID    = 20271
 
 local pendingSealCast = nil
 local prevSealSnapshot = nil
 local paladinHooksInstalled = false
+local lastHolyStrikeTime = 0
+local lastKnownBuffCount = nil
+local pendingEchoSwingTime = nil
+local pendingEchoAuraTime = nil
+local pendingEchoAuraDelta = 0
 
 local function FallbackIconForAura(name, spellID)
     if spellID then
@@ -279,6 +287,110 @@ local function FallbackIconForAura(name, spellID)
         end
     end
     return 132325
+end
+
+local function IsHolyStrikeSpell(spellID, spellName)
+    if spellID and not IsSecret(spellID) and type(spellID) == "number" then
+        if HOLY_STRIKE_SPELL_IDS[spellID] then
+            return true
+        end
+        if C_Spell and C_Spell.GetSpellName then
+            local okN, n = pcall(C_Spell.GetSpellName, spellID)
+            if okN and not IsSecret(n) and type(n) == "string" and n:lower() == "holy strike" then
+                HOLY_STRIKE_SPELL_IDS[spellID] = true
+                return true
+            end
+        end
+    end
+    if spellName and not IsSecret(spellName) and type(spellName) == "string" then
+        if spellName:lower() == "holy strike" then
+            if spellID and not IsSecret(spellID) and type(spellID) == "number" then
+                HOLY_STRIKE_SPELL_IDS[spellID] = true
+            end
+            return true
+        end
+    end
+    return false
+end
+
+local function MarkHolyStrikeCast()
+    lastHolyStrikeTime = GetTime()
+    pendingEchoSwingTime = nil
+    pendingEchoAuraTime = nil
+end
+
+local function CountPlayerHelpfulBuffSlots()
+    local count = 0
+    if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
+        for i = 1, 40 do
+            local ok, data = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+            if ok and type(data) == "table" then
+                count = count + 1
+            else
+                break
+            end
+        end
+        return count
+    elseif UnitAura then
+        for i = 1, 40 do
+            local ok, name = pcall(UnitAura, "player", i, "HELPFUL")
+            if ok and name ~= nil then
+                count = count + 1
+            else
+                break
+            end
+        end
+    end
+    return count
+end
+
+-- Applies an Echo buff change confirmed by UNIT_AURA("player") paired with a landed white MH swing
+-- when C_UnitAuras aura fields are secret in combat.
+local function ApplyCombatEchoAuraUpdate(deltaBuffs)
+    if not isPaladinClass or not hasUnsealedWrath or testPaladinPreview then return end
+    local now = GetTime()
+    if (now - lastHolyStrikeTime) < 0.30 then return end
+
+    if echoState.active and (not sealState.active or sealState.icon ~= echoState.icon) then
+        -- Landed a white melee attack without the stored Echo Seal active -> stored Echo stacks are consumed
+        if (deltaBuffs and deltaBuffs < 0) or not sealState.active or not sealState.icon then
+            echoState.active = false
+            echoState.stacks = 0
+            echoState.icon = nil
+            echoState.spellID = nil
+            echoState.duration = 0
+            echoState.expirationTime = 0
+        else
+            -- Stored Echo buff was replaced by 1 stack of the currently active Seal's Echo
+            echoState.active = true
+            echoState.icon = sealState.icon
+            echoState.spellID = sealState.spellID
+            echoState.stacks = 1
+            echoState.duration = 30
+            echoState.expirationTime = now + 30
+        end
+    elseif sealState.active and sealState.icon then
+        if not echoState.active then
+            echoState.active = true
+            echoState.icon = sealState.icon
+            echoState.spellID = sealState.spellID
+            echoState.stacks = 1
+            echoState.duration = 30
+            echoState.expirationTime = now + 30
+        elseif echoState.icon == sealState.icon then
+            if deltaBuffs and deltaBuffs < 0 then
+                echoState.active = false
+                echoState.stacks = 0
+                echoState.icon = nil
+                echoState.spellID = nil
+            else
+                echoState.stacks = Clamp((echoState.stacks or 1) + 1, 1, MAX_ECHO_STACKS)
+                echoState.duration = 30
+                echoState.expirationTime = now + 30
+            end
+        end
+    end
+    if UpdatePaladinUI then UpdatePaladinUI() end
 end
 
 local function RegisterPaladinSealSpell(spellID, iconID, spellName)
@@ -326,31 +438,56 @@ local function IdentifyPaladinSealSpell(spellID, spellName)
     return false, nil, nil
 end
 
+local function HarvestFlyoutSeals(flyoutID)
+    if not flyoutID or IsSecret(flyoutID) or type(flyoutID) ~= "number" then return end
+    if not (GetFlyoutInfo and GetFlyoutSlotInfo) then return end
+    local okF, _, _, numSlots = pcall(GetFlyoutInfo, flyoutID)
+    if not okF or IsSecret(numSlots) or type(numSlots) ~= "number" or numSlots <= 0 then return end
+    for s = 1, numSlots do
+        local okS, spID, overrideSpellID = pcall(GetFlyoutSlotInfo, flyoutID, s)
+        if okS then
+            if spID and not IsSecret(spID) and type(spID) == "number" then
+                IdentifyPaladinSealSpell(spID, nil)
+            end
+            if overrideSpellID and not IsSecret(overrideSpellID) and type(overrideSpellID) == "number" then
+                IdentifyPaladinSealSpell(overrideSpellID, nil)
+            end
+        end
+    end
+end
+
 local function HarvestKnownPaladinSeals()
     if not isPaladinClass then return end
 
-    -- 1. Scan player spellbook slots for any "Seal of ..." spells & ranks
+    -- 1. Scan player spellbook slots (including the WoW Forever "Seals" flyout)
     if C_SpellBook and C_SpellBook.GetSpellBookItemInfo then
         local bank = (Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
+        local flyoutType = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.Flyout or 4
         for slot = 1, 200 do
             local ok, info = pcall(C_SpellBook.GetSpellBookItemInfo, slot, bank)
             if not ok or type(info) ~= "table" then break end
             local spID = not IsSecret(info.spellID) and info.spellID or nil
+            local actID = not IsSecret(info.actionID) and info.actionID or nil
+            local itemType = not IsSecret(info.itemType) and info.itemType or nil
             local name = not IsSecret(info.name) and info.name or nil
             local icon = not IsSecret(info.iconID) and info.iconID or nil
             if type(name) == "string" and name:lower():find("^seal of ") and type(spID) == "number" then
                 RegisterPaladinSealSpell(spID, icon, name)
+            elseif (itemType == flyoutType or (type(name) == "string" and name:lower() == "seals")) and type(actID) == "number" then
+                HarvestFlyoutSeals(actID)
             end
         end
     end
 
-    -- 2. Scan action bar slots 1..180 for any placed Seal spells
+    -- 2. Scan action bar slots 1..180 for any placed Seal spells or Seal flyouts
     if GetActionInfo then
         for slot = 1, 180 do
             local ok, actionType, id = pcall(GetActionInfo, slot)
             if ok and not IsSecret(actionType) and not IsSecret(id) then
                 if actionType == "spell" and type(id) == "number" then
                     IdentifyPaladinSealSpell(id, nil)
+                elseif actionType == "flyout" and type(id) == "number" then
+                    HarvestFlyoutSeals(id)
                 elseif actionType == "macro" and type(id) == "number" and GetMacroSpell then
                     local okM, macroSpellID = pcall(GetMacroSpell, id)
                     if okM and not IsSecret(macroSpellID) and type(macroSpellID) == "number" then
@@ -386,6 +523,7 @@ local function ActivateSealFromCast(spellID, spellName, iconOverride)
     sealState.duration = 30
     sealState.expirationTime = now + 30
     sealState.lastCastTime = now
+    lastKnownBuffCount = CountPlayerHelpfulBuffSlots()
 
     if UpdatePaladinUI then UpdatePaladinUI() end
     if EnsureLoopRunning then EnsureLoopRunning() end
@@ -429,6 +567,10 @@ local function SetupPaladinCastHooks()
 
             local spID, spName, icon = nil, nil, nil
             if actionType == "spell" and type(id) == "number" then
+                if IsHolyStrikeSpell(id, nil) then
+                    MarkHolyStrikeCast()
+                    return
+                end
                 local isSeal, ic, nm = IdentifyPaladinSealSpell(id, nil)
                 if isSeal then
                     spID, icon, spName = id, ic, nm
@@ -437,9 +579,17 @@ local function SetupPaladinCastHooks()
                 local okM, mSpell = pcall(GetMacroSpell, id)
                 if okM and not IsSecret(mSpell) then
                     if type(mSpell) == "number" then
+                        if IsHolyStrikeSpell(mSpell, nil) then
+                            MarkHolyStrikeCast()
+                            return
+                        end
                         local isSeal, ic, nm = IdentifyPaladinSealSpell(mSpell, nil)
                         if isSeal then spID, icon, spName = mSpell, ic, nm end
                     elseif type(mSpell) == "string" then
+                        if IsHolyStrikeSpell(nil, mSpell) then
+                            MarkHolyStrikeCast()
+                            return
+                        end
                         local isSeal, ic, nm = IdentifyPaladinSealSpell(nil, mSpell)
                         if isSeal then icon, spName = ic, nm end
                     end
@@ -464,6 +614,10 @@ local function SetupPaladinCastHooks()
         hooksecurefunc("CastSpellByName", function(name)
             if not isPaladinClass or not name or IsSecret(name) or type(name) ~= "string" then return end
             local cleanName = name:gsub("%b()", ""):match("^%s*(.-)%s*$")
+            if IsHolyStrikeSpell(nil, cleanName) then
+                MarkHolyStrikeCast()
+                return
+            end
             local isSeal, icon, nm = IdentifyPaladinSealSpell(nil, cleanName)
             if isSeal then
                 local now = GetTime()
@@ -484,6 +638,10 @@ local function SetupPaladinCastHooks()
                 local spID = not IsSecret(info.spellID) and info.spellID or nil
                 local nm = not IsSecret(info.name) and info.name or nil
                 local ic = not IsSecret(info.iconID) and info.iconID or nil
+                if IsHolyStrikeSpell(spID, nm) then
+                    MarkHolyStrikeCast()
+                    return
+                end
                 local isSeal, resolvedIcon, resolvedName = IdentifyPaladinSealSpell(spID, nm)
                 if isSeal then
                     local now = GetTime()
@@ -990,13 +1148,22 @@ RefreshPaladinAuras = function()
     end
 
     if foundEcho then
+        local isNewEcho = (not echoState.active) or (eIcon and echoState.icon ~= eIcon) or (eID and echoState.spellID ~= eID)
         echoState.active = true
         echoState.icon = eIcon
         echoState.stacks = eStacks
-        echoState.duration = eDur
-        echoState.expirationTime = eExp
+        echoState.duration = (eDur and eDur > 0) and eDur or 30
+        if eExp and eExp > now then
+            echoState.expirationTime = eExp
+        elseif isNewEcho or not echoState.expirationTime or echoState.expirationTime <= now then
+            echoState.expirationTime = now + echoState.duration
+        end
         echoState.spellID = eID
         echoState.auraInstanceID = eInstID
+    elseif sawSecretAura and echoState.active and (not echoState.expirationTime or echoState.expirationTime <= 0 or echoState.expirationTime > now) then
+        -- Preserve active Echo buff state while C_UnitAuras is secret in combat;
+        -- combat updates come from UNIT_AURA / CLEU buff events
+        echoState.active = true
     else
         echoState.active = false
         echoState.icon = nil
@@ -1005,6 +1172,10 @@ RefreshPaladinAuras = function()
         echoState.expirationTime = 0
         echoState.spellID = nil
         echoState.auraInstanceID = nil
+    end
+
+    if lastKnownBuffCount == nil then
+        lastKnownBuffCount = CountPlayerHelpfulBuffSlots()
     end
 
     if UpdatePaladinUI then UpdatePaladinUI() end
@@ -2195,6 +2366,23 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
         StartSwing(slot, dur, true)
 
         if isPaladinClass and hasUnsealedWrath and not testPaladinPreview then
+            if slot == SWING_MH then
+                local now = GetTime()
+                if (now - lastHolyStrikeTime) < 0.30 then
+                    -- Holy Strike never adds an Echo stack
+                    pendingEchoSwingTime = nil
+                    pendingEchoAuraTime = nil
+                elseif pendingEchoAuraTime and (now - pendingEchoAuraTime) < 0.18 then
+                    -- UNIT_AURA("player") already fired on this combat tick for the landed white swing
+                    local delta = pendingEchoAuraDelta
+                    pendingEchoAuraTime = nil
+                    pendingEchoAuraDelta = 0
+                    ApplyCombatEchoAuraUpdate(delta)
+                else
+                    -- Wait for UNIT_AURA("player") to confirm the white swing actually landed & updated the Echo buff
+                    pendingEchoSwingTime = now
+                end
+            end
             RefreshPaladinAuras()
         end
     end
@@ -2236,10 +2424,20 @@ function handlers.UNIT_ATTACK_SPEED(unit)
     end
 end
 
--- Classic / Forever Parry Haste: when the player parries an incoming attack, MH swing advances
+-- Classic / Forever Parry Haste + Target Miss/Parry/Dodge cancellation for Unsealed Wrath
 function handlers.UNIT_COMBAT(unit, action)
-    if not db or not db.enabled or not db.parryHaste then return end
+    if not db or not db.enabled then return end
     if IsSecret(unit) or IsSecret(action) then return end
+
+    if isPaladinClass and unit == "target" then
+        if action == "MISS" or action == "PARRY" or action == "DODGE" or action == "EVADE"
+            or action == "IMMUNE" or action == "DEFLECT" then
+            pendingEchoSwingTime = nil
+            pendingEchoAuraTime = nil
+        end
+    end
+
+    if not db.parryHaste then return end
     if unit ~= "player" or action ~= "PARRY" then return end
     if not mhState.active or mhState.isRanged or mhState.duration <= 0 then return end
 
@@ -2295,14 +2493,55 @@ end
 
 function handlers.UNIT_AURA(unit)
     if IsSecret(unit) or unit ~= "player" then return end
-    if isPaladinClass then
-        RefreshPaladinAuras()
+    if not isPaladinClass then return end
+
+    local newBuffCount = CountPlayerHelpfulBuffSlots()
+    local prevBuffCount = lastKnownBuffCount or newBuffCount
+    local deltaBuffs = newBuffCount - prevBuffCount
+    lastKnownBuffCount = newBuffCount
+
+    local now = GetTime()
+    if hasUnsealedWrath and not testPaladinPreview then
+        local justCastSeal = sealState.lastCastTime and (now - sealState.lastCastTime) < 0.20 and not pendingEchoSwingTime
+        local justUsedHolyStrike = (now - lastHolyStrikeTime) < 0.30
+        if not justCastSeal and not justUsedHolyStrike then
+            if pendingEchoSwingTime and (now - pendingEchoSwingTime) < 0.25 then
+                -- Confirmed: white MH swing landed and triggered a player aura update!
+                pendingEchoSwingTime = nil
+                pendingEchoAuraTime = nil
+                ApplyCombatEchoAuraUpdate(deltaBuffs)
+            else
+                pendingEchoAuraTime = now
+                pendingEchoAuraDelta = deltaBuffs
+                if deltaBuffs < 0 and echoState.active and C_Timer and C_Timer.After then
+                    local checkTime = now
+                    C_Timer.After(0.08, function()
+                        if pendingEchoAuraTime == checkTime then
+                            pendingEchoAuraTime = nil
+                            if echoState.active and sealState.active and sealState.expirationTime and (sealState.expirationTime - GetTime()) > 1.0 then
+                                echoState.active = false
+                                echoState.stacks = 0
+                                echoState.icon = nil
+                                echoState.spellID = nil
+                                if UpdatePaladinUI then UpdatePaladinUI() end
+                            end
+                        end
+                    end)
+                end
+            end
+        end
     end
+
+    RefreshPaladinAuras()
 end
 
 function handlers.UNIT_SPELLCAST_SENT(unit, _, _, spellID)
     if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
     if not IsSecret(spellID) and type(spellID) == "number" then
+        if IsHolyStrikeSpell(spellID, nil) then
+            MarkHolyStrikeCast()
+            return
+        end
         local isSeal, icon, spName = IdentifyPaladinSealSpell(spellID, nil)
         if isSeal then
             pendingSealCast = { spellID = spellID, name = spName, icon = icon, time = GetTime() }
@@ -2315,16 +2554,15 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
     if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
     local now = GetTime()
     if not IsSecret(spellID) and type(spellID) == "number" then
+        if IsHolyStrikeSpell(spellID, nil) then
+            MarkHolyStrikeCast()
+            return
+        end
         local isSeal, icon, spName = IdentifyPaladinSealSpell(spellID, nil)
         if isSeal then
             pendingSealCast = nil
             prevSealSnapshot = nil
             ActivateSealFromCast(spellID, spName, icon)
-        elseif spellID == JUDGEMENT_SPELL_ID then
-            -- Standard Judgement unleashes and consumes the active Seal (Swift Judgement 1310994 does not)
-            sealState.active = false
-            sealState.expirationTime = 0
-            sealState.lastCastTime = nil
         end
     elseif pendingSealCast and (now - pendingSealCast.time) < 1.0 then
         -- spellID is secret in combat, confirm the pending Seal cast captured from UseAction / CastSpell
@@ -2410,10 +2648,13 @@ function handlers.PLAYER_LEVEL_UP()
 end
 
 function handlers.PLAYER_REGEN_DISABLED()
+    lastKnownBuffCount = CountPlayerHelpfulBuffSlots()
     RefreshVisibility()
 end
 
 function handlers.PLAYER_REGEN_ENABLED()
+    pendingEchoSwingTime = nil
+    pendingEchoAuraTime = nil
     if pendingCVars then
         pendingCVars = false
         ApplyBlizzardBarCVar()
@@ -2441,14 +2682,80 @@ function handlers.UI_SCALE_CHANGED()
     end
 end
 
--- Fallback ONLY for non-Forever Classic clients that lack native PLAYER_SWING
+-- Direct server combat log aura tracking (SPELL_AURA_APPLIED / DOSE / REMOVED) + non-Forever swing fallback
 function handlers.COMBAT_LOG_EVENT_UNFILTERED()
-    if hasNativePlayerSwing or not db or not db.enabled then return end
-    if not CombatLogGetCurrentEventInfo then return end
-    local _, subevent, _, sourceGUID, _, _, _, _, _, _, _, arg12, _, _, _, _, _, _, _, _, isOffHand = CombatLogGetCurrentEventInfo()
-    if IsSecret(subevent) or IsSecret(sourceGUID) then return end
-    local playerGUID = UnitGUID("player")
-    if IsSecret(playerGUID) or sourceGUID ~= playerGUID then return end
+    if not db or not db.enabled or not CombatLogGetCurrentEventInfo then return end
+    local _, subevent, _, sourceGUID, _, _, _, destGUID, _, _, _, arg12, arg13, _, _, arg16, _, _, _, _, isOffHand = CombatLogGetCurrentEventInfo()
+    if IsSecret(subevent) then return end
+    local playerGUID = UnitGUID and UnitGUID("player") or nil
+    if not playerGUID or IsSecret(playerGUID) then return end
+
+    -- 1. Paladin Seal & Echo aura events directly from server combat log when non-secret
+    if isPaladinClass and not testPaladinPreview and not IsSecret(destGUID) and destGUID == playerGUID then
+        if subevent == "SPELL_AURA_APPLIED" or subevent == "SPELL_AURA_APPLIED_DOSE"
+            or subevent == "SPELL_AURA_REMOVED_DOSE" or subevent == "SPELL_AURA_REFRESH"
+            or subevent == "SPELL_AURA_REMOVED" then
+            local spID = (not IsSecret(arg12) and type(arg12) == "number") and arg12 or nil
+            local spName = (not IsSecret(arg13) and type(arg13) == "string") and arg13 or nil
+            local dose = (not IsSecret(arg16) and type(arg16) == "number") and arg16 or nil
+
+            local isEcho = (spID and ECHO_SPELL_IDS[spID] ~= nil)
+                or (type(spName) == "string" and spName:lower():find("^echo of ") ~= nil)
+            if isEcho then
+                pendingEchoSwingTime = nil
+                pendingEchoAuraTime = nil
+                local now = GetTime()
+                if subevent == "SPELL_AURA_REMOVED" then
+                    if not echoState.spellID or not spID or echoState.spellID == spID then
+                        echoState.active = false
+                        echoState.stacks = 0
+                        echoState.icon = nil
+                        echoState.spellID = nil
+                        echoState.duration = 0
+                        echoState.expirationTime = 0
+                    end
+                elseif subevent == "SPELL_AURA_APPLIED_DOSE" then
+                    echoState.active = true
+                    echoState.spellID = spID or echoState.spellID
+                    echoState.icon = (spID and ECHO_SPELL_IDS[spID]) or FallbackIconForAura(spName, spID)
+                    echoState.stacks = Clamp((dose and dose > 0) and dose or ((echoState.stacks or 1) + 1), 1, MAX_ECHO_STACKS)
+                    echoState.duration = 30
+                    echoState.expirationTime = now + 30
+                elseif subevent == "SPELL_AURA_REMOVED_DOSE" then
+                    echoState.stacks = Clamp((dose and dose > 0) and dose or ((echoState.stacks or 2) - 1), 1, MAX_ECHO_STACKS)
+                else
+                    echoState.active = true
+                    echoState.spellID = spID or echoState.spellID
+                    echoState.icon = (spID and ECHO_SPELL_IDS[spID]) or FallbackIconForAura(spName, spID)
+                    echoState.stacks = Clamp((dose and dose > 0) and dose or 1, 1, MAX_ECHO_STACKS)
+                    echoState.duration = 30
+                    echoState.expirationTime = now + 30
+                end
+                if UpdatePaladinUI then UpdatePaladinUI() end
+                return
+            end
+
+            local isSeal, sealIcon, sealName = IdentifyPaladinSealSpell(spID, spName)
+            if isSeal then
+                if subevent == "SPELL_AURA_REMOVED" then
+                    if not sealState.spellID or not spID or sealState.spellID == spID then
+                        sealState.active = false
+                        sealState.expirationTime = 0
+                        sealState.icon = nil
+                        sealState.spellID = nil
+                        sealState.lastCastTime = nil
+                        if UpdatePaladinUI then UpdatePaladinUI() end
+                    end
+                else
+                    ActivateSealFromCast(spID, sealName, sealIcon)
+                end
+                return
+            end
+        end
+    end
+
+    -- 2. Fallback swing detection ONLY for non-Forever Classic clients that lack native PLAYER_SWING
+    if hasNativePlayerSwing or IsSecret(sourceGUID) or sourceGUID ~= playerGUID then return end
 
     if subevent == "SWING_DAMAGE" then
         local off = (type(arg12) == "boolean" and arg12) or (type(isOffHand) == "boolean" and isOffHand)
@@ -3015,9 +3322,7 @@ end
 hasNativePlayerSwing = pcall(eventFrame.RegisterEvent, eventFrame, "PLAYER_SWING")
 for event in pairs(handlers) do
     if event ~= "PLAYER_SWING" then
-        if event ~= "COMBAT_LOG_EVENT_UNFILTERED" or not hasNativePlayerSwing then
-            pcall(eventFrame.RegisterEvent, eventFrame, event)
-        end
+        pcall(eventFrame.RegisterEvent, eventFrame, event)
     end
 end
 
