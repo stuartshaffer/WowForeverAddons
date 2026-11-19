@@ -2311,14 +2311,20 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
                 if debugMode then
                     DebugLog(("PLAYER_SWING MH (hsDelta=%.0fms, avoidDelta=%.0fms, woundSameFrame=%s)"):format((now - lastHolyStrikeTime) * 1000, (now - lastTargetAvoidTime) * 1000, tostring(lastMHSwingWoundSeen)))
                 end
-                if (now - lastHolyStrikeTime) >= 0.35 and (lastMHSwingWoundSeen or (now - lastTargetAvoidTime) >= 0.20) then
+                if (now - lastHolyStrikeTime) >= 0.35 then
                     pendingEchoSwingToken = pendingEchoSwingToken + 1
                     local myToken = pendingEchoSwingToken
                     if C_Timer and C_Timer.After then
                         -- Defer 0.15s so Holy Strike (UNIT_SPELLCAST_SUCCEEDED) or
-                        -- target MISS/PARRY/DODGE (UNIT_COMBAT) cancels this swing before it updates Echo stacks
+                        -- target MISS/PARRY/DODGE without WOUND (UNIT_COMBAT) cancels this swing
                         C_Timer.After(0.15, function()
                             if pendingEchoSwingToken == myToken then
+                                if not lastMHSwingWoundSeen and lastTargetAvoidTime >= lastMHSwingTime then
+                                    if debugMode then
+                                        DebugLog("MH swing skipped at 150ms (target avoid without WOUND)")
+                                    end
+                                    return
+                                end
                                 ApplyCombatEchoSwingHit()
                                 if debugMode then
                                     DebugLog(("ApplyCombatEchoSwingHit -> echo=%s stacks=%d"):format(tostring(echoState.active), echoState.stacks or 0))
@@ -2395,20 +2401,17 @@ function handlers.UNIT_COMBAT(unit, action)
             or action == "IMMUNE" or action == "DEFLECT" or action == "ABSORB" then
             local now = GetTime()
             lastTargetAvoidTime = now
-            if not lastMHSwingWoundSeen then
-                pendingEchoSwingToken = pendingEchoSwingToken + 1
-                if lastEchoCommit and (now - lastEchoCommit.time) < 0.75 then
-                    echoState.active = lastEchoCommit.active
-                    echoState.stacks = lastEchoCommit.stacks
-                    echoState.icon = lastEchoCommit.icon
-                    echoState.spellID = lastEchoCommit.spellID
-                    echoState.duration = lastEchoCommit.duration
-                    echoState.expirationTime = lastEchoCommit.expirationTime
-                    lastEchoCommit = nil
-                    if UpdatePaladinUI then UpdatePaladinUI() end
-                    if debugMode then
-                        DebugLog(("ROLLBACK echo -> echo=%s stacks=%d (late %s)"):format(tostring(echoState.active), echoState.stacks or 0, tostring(action)))
-                    end
+            if not lastMHSwingWoundSeen and lastEchoCommit and (now - lastEchoCommit.time) < 0.75 then
+                echoState.active = lastEchoCommit.active
+                echoState.stacks = lastEchoCommit.stacks
+                echoState.icon = lastEchoCommit.icon
+                echoState.spellID = lastEchoCommit.spellID
+                echoState.duration = lastEchoCommit.duration
+                echoState.expirationTime = lastEchoCommit.expirationTime
+                lastEchoCommit = nil
+                if UpdatePaladinUI then UpdatePaladinUI() end
+                if debugMode then
+                    DebugLog(("ROLLBACK echo -> echo=%s stacks=%d (late %s)"):format(tostring(echoState.active), echoState.stacks or 0, tostring(action)))
                 end
             end
         end
