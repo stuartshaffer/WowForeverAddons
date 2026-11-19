@@ -1270,6 +1270,7 @@ end
 
 local nativeSealContainer = nil
 local nativeEchoContainer = nil
+local nativeEchoPipContainers = {}
 local nativePendingRebuild = false
 local nativeRebuildQueued = false
 
@@ -1306,6 +1307,14 @@ local function BuildNativePaladinAuras()
         pcall(nativeEchoContainer.Hide, nativeEchoContainer)
         nativeEchoContainer = nil
     end
+    for i = 1, #nativeEchoPipContainers do
+        local pc = nativeEchoPipContainers[i]
+        if pc then
+            pcall(pc.SetEnabled, pc, false)
+            pcall(pc.Hide, pc)
+        end
+    end
+    wipe(nativeEchoPipContainers)
 
     local sz = (db and db.size) or DEFAULTS.size
     local boxSz = Clamp(math.floor(sz * 0.50 + 0.5), 16, 160)
@@ -1377,25 +1386,12 @@ local function BuildNativePaladinAuras()
             echoFilterIDs[id] = true
         end
 
-    local rc = (db and db.readyColor) or DEFAULTS.readyColor
+        local rc = (db and db.readyColor) or DEFAULTS.readyColor
         local r = math.floor(Clamp(rc.r + 0.04, 0, 1) * 255 + 0.5)
         local g = math.floor(Clamp(rc.g + 0.14, 0, 1) * 255 + 0.5)
         local b = math.floor(Clamp(rc.b + 0.06, 0, 1) * 255 + 0.5)
         local pipDotSz = math.max(4, math.floor(pipOrbSz * 0.58 + 0.5))
-        local function PipDot(idx)
-            local ox = -(idx - 1) * pipDotSz
-            local oy = (2 - idx) * pipStepY
-            return ("|T%s:%d:%d:%d:%d:64:64:0:64:0:64:%d:%d:%d|t"):format(TEX_DISC, pipDotSz, pipDotSz, ox, oy, r, g, b)
-        end
-        local dot1 = PipDot(1)
-        local dot2 = PipDot(2)
-        local dot3 = PipDot(3)
-        local pipsFmt = CreateNumericFormatter({
-            { threshold = 0, format = "" },
-            { threshold = 1, format = dot1 },
-            { threshold = 2, format = dot1 .. dot2 },
-            { threshold = 3, format = dot1 .. dot2 .. dot3 },
-        })
+        local dot = ("|T%s:%d:%d:0:0:64:64:0:64:0:64:%d:%d:%d|t"):format(TEX_DISC, pipDotSz, pipDotSz, r, g, b)
 
         pcall(function()
             local c = CreateFrame("AuraContainer", nil, eb.nativeWrap, "CustomAuraContainerTemplate")
@@ -1416,28 +1412,53 @@ local function BuildNativePaladinAuras()
                     icon:SetPoint("CENTER", eb, "CENTER", 0, 0)
                     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
                     button:SetIcon(icon)
-
-                    if eb.pips and eb.pips[2] then
-                        local pipOverlay = CreateFrame("Frame", nil, button)
-                        pipOverlay:SetAllPoints(eb)
-                        pipOverlay:SetFrameLevel(eb:GetFrameLevel() + 6)
-
-                        local pipFS = pipOverlay:CreateFontString(nil, "OVERLAY")
-                        pipFS:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", pipDotSz, "")
-                        pipFS:SetJustifyH("LEFT")
-                        pipFS:SetJustifyV("MIDDLE")
-                        pipFS:SetPoint("LEFT", eb.pips[2], "CENTER", -math.floor(pipDotSz * 0.5 + 0.5), 0)
-
-                        if not (pipsFmt and pcall(button.SetApplicationCount, button, pipFS, { formatter = pipsFmt })) then
-                            pcall(button.SetApplicationCount, button, pipFS, {})
-                        end
-                    end
                 end,
             })
             c:SetAuraSlotEnabled("Echo", true)
             c:SetEnabled(true)
             nativeEchoContainer = c
         end)
+
+        -- One AuraContainer per pip so each green dot is centered directly on eb.pips[i]
+        -- with zero horizontal text-advance drift.
+        for i = 1, MAX_ECHO_STACKS do
+            local pipFrame = eb.pips and eb.pips[i]
+            if pipFrame then
+                local pipFmt = CreateNumericFormatter({
+                    { threshold = 0, format = "" },
+                    { threshold = i, format = dot },
+                })
+                pcall(function()
+                    local pc = CreateFrame("AuraContainer", nil, eb.nativeWrap, "CustomAuraContainerTemplate")
+                    pc:SetEnabled(false)
+                    pc:SetAuraProcessingPolicy(CustomAuraContainerAuraProcessingPolicy.None)
+                    pc:SetPoint("CENTER", pipFrame, "CENTER", 0, 0)
+                    pc:SetUnit("player")
+                    pc:AddAuraSlot("EchoPip" .. i, "HELPFUL", {
+                        candidateFilters = { includeSpellIDs = echoFilterIDs },
+                        initializeFrame = function(button)
+                            button:EnableMouse(false)
+                            button:ClearAllPoints()
+                            button:SetAllPoints(pipFrame)
+                            button:SetFrameLevel(pipFrame:GetFrameLevel() + 1)
+
+                            local pipFS = button:CreateFontString(nil, "OVERLAY")
+                            pipFS:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", pipDotSz, "")
+                            pipFS:SetJustifyH("CENTER")
+                            pipFS:SetJustifyV("MIDDLE")
+                            pipFS:SetPoint("CENTER", pipFrame, "CENTER", 0, 0)
+
+                            if pipFmt then
+                                pcall(button.SetApplicationCount, button, pipFS, { formatter = pipFmt })
+                            end
+                        end,
+                    })
+                    pc:SetAuraSlotEnabled("EchoPip" .. i, true)
+                    pc:SetEnabled(true)
+                    nativeEchoPipContainers[#nativeEchoPipContainers + 1] = pc
+                end)
+            end
+        end
     end
     return true
 end
