@@ -269,6 +269,9 @@ local prevSealSnapshot = nil
 local paladinHooksInstalled = false
 local lastHolyStrikeTime = 0
 local lastTargetAvoidTime = 0
+local lastTargetWoundTime = 0
+local lastMHSwingWoundSeen = false
+local lastEchoCommit = nil
 local lastKnownBuffCount = nil
 local pendingEchoSwingToken = 0
 local debugMode = false
@@ -433,7 +436,17 @@ local function ApplyCombatEchoSwingHit()
     if not isPaladinClass or not hasUnsealedWrath or testPaladinPreview then return end
     local now = GetTime()
     if (now - lastHolyStrikeTime) < 0.35 then return end
-    if (now - lastTargetAvoidTime) < 0.25 then return end
+    if not lastMHSwingWoundSeen and (now - lastTargetAvoidTime) < 0.25 then return end
+
+    lastEchoCommit = {
+        time = lastMHSwingTime,
+        active = echoState.active,
+        stacks = echoState.stacks,
+        icon = echoState.icon,
+        spellID = echoState.spellID,
+        duration = echoState.duration,
+        expirationTime = echoState.expirationTime,
+    }
 
     if echoState.active and (not sealState.active or sealState.icon ~= echoState.icon) then
         -- Landing an attack with a different Seal (or without that Seal) consumes all stored Echo stacks
@@ -462,8 +475,14 @@ local function ApplyCombatEchoSwingHit()
     if UpdatePaladinUI then UpdatePaladinUI() end
 end
 
+-- Seal proc spells (e.g. Seal of Command 20424) fire UNIT_SPELLCAST_SUCCEEDED on swing procs, not Seal buff casts.
+local SEAL_PROC_SPELL_IDS = {
+    [20424] = true, -- Seal of Command proc
+}
+
 local function RegisterPaladinSealSpell(spellID, iconID, spellName)
     if not spellID or IsSecret(spellID) or type(spellID) ~= "number" or spellID <= 0 then return end
+    if SEAL_PROC_SPELL_IDS[spellID] then return end
     local resolvedIcon = (not IsSecret(iconID) and iconID) or SEAL_SPELL_IDS[spellID] or FallbackIconForAura(spellName, spellID)
     if not SEAL_SPELL_IDS[spellID] then
         SEAL_SPELL_IDS[spellID] = resolvedIcon
@@ -475,6 +494,9 @@ end
 
 local function IdentifyPaladinSealSpell(spellID, spellName)
     if spellID and not IsSecret(spellID) and type(spellID) == "number" then
+        if SEAL_PROC_SPELL_IDS[spellID] then
+            return false, nil, nil
+        end
         if SEAL_SPELL_IDS[spellID] then
             return true, SEAL_SPELL_IDS[spellID], spellName
         end
@@ -2285,10 +2307,11 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
             if slot == SWING_MH then
                 local now = GetTime()
                 lastMHSwingTime = now
+                lastMHSwingWoundSeen = (now - lastTargetWoundTime) < 0.02
                 if debugMode then
-                    DebugLog(("PLAYER_SWING MH (hsDelta=%.0fms, avoidDelta=%.0fms)"):format((now - lastHolyStrikeTime) * 1000, (now - lastTargetAvoidTime) * 1000))
+                    DebugLog(("PLAYER_SWING MH (hsDelta=%.0fms, avoidDelta=%.0fms, woundSameFrame=%s)"):format((now - lastHolyStrikeTime) * 1000, (now - lastTargetAvoidTime) * 1000, tostring(lastMHSwingWoundSeen)))
                 end
-                if (now - lastHolyStrikeTime) >= 0.35 and (now - lastTargetAvoidTime) >= 0.20 then
+                if (now - lastHolyStrikeTime) >= 0.35 and (lastMHSwingWoundSeen or (now - lastTargetAvoidTime) >= 0.20) then
                     pendingEchoSwingToken = pendingEchoSwingToken + 1
                     local myToken = pendingEchoSwingToken
                     if C_Timer and C_Timer.After then
@@ -2365,10 +2388,29 @@ function handlers.UNIT_COMBAT(unit, action)
     end
 
     if isPaladinClass and unit == "target" then
-        if action == "MISS" or action == "PARRY" or action == "DODGE" or action == "EVADE"
+        if action == "WOUND" then
+            lastTargetWoundTime = GetTime()
+            lastMHSwingWoundSeen = true
+        elseif action == "MISS" or action == "PARRY" or action == "DODGE" or action == "EVADE"
             or action == "IMMUNE" or action == "DEFLECT" or action == "ABSORB" then
-            lastTargetAvoidTime = GetTime()
-            pendingEchoSwingToken = pendingEchoSwingToken + 1
+            local now = GetTime()
+            lastTargetAvoidTime = now
+            if not lastMHSwingWoundSeen then
+                pendingEchoSwingToken = pendingEchoSwingToken + 1
+                if lastEchoCommit and (now - lastEchoCommit.time) < 0.75 then
+                    echoState.active = lastEchoCommit.active
+                    echoState.stacks = lastEchoCommit.stacks
+                    echoState.icon = lastEchoCommit.icon
+                    echoState.spellID = lastEchoCommit.spellID
+                    echoState.duration = lastEchoCommit.duration
+                    echoState.expirationTime = lastEchoCommit.expirationTime
+                    lastEchoCommit = nil
+                    if UpdatePaladinUI then UpdatePaladinUI() end
+                    if debugMode then
+                        DebugLog(("ROLLBACK echo -> echo=%s stacks=%d (late %s)"):format(tostring(echoState.active), echoState.stacks or 0, tostring(action)))
+                    end
+                end
+            end
         end
     end
 
