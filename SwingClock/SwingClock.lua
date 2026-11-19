@@ -292,7 +292,8 @@ local function DebugLog(msg)
     if not debugMode then return end
     local now = GetTime()
     if debugStartTime == 0 then debugStartTime = now end
-    debugLines[#debugLines + 1] = ("[%06.3f] %s"):format(now - debugStartTime, tostring(msg))
+    local wall = date and date("%H:%M:%S") or "00:00:00"
+    debugLines[#debugLines + 1] = ("[%s +%06.3fs] %s"):format(wall, now - debugStartTime, tostring(msg))
     if #debugLines > 200 then
         table.remove(debugLines, 1)
     end
