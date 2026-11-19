@@ -273,6 +273,108 @@ local lastKnownBuffCount = nil
 local pendingEchoSwingToken = 0
 local debugMode = false
 local lastMHSwingTime = 0
+local debugLines = {}
+local debugStartTime = 0
+local debugFrame = nil
+
+local function RefreshDebugWindow()
+    if not debugFrame or not debugFrame.editBox then return end
+    debugFrame.editBox:SetText(table.concat(debugLines, "\n"))
+    if debugFrame.scrollFrame and debugFrame.scrollFrame.UpdateScrollChildRect then
+        debugFrame.scrollFrame:UpdateScrollChildRect()
+    end
+    if debugFrame.scrollFrame and debugFrame.scrollFrame.GetVerticalScrollRange then
+        debugFrame.scrollFrame:SetVerticalScroll(debugFrame.scrollFrame:GetVerticalScrollRange() or 0)
+    end
+end
+
+local function DebugLog(msg)
+    if not debugMode then return end
+    local now = GetTime()
+    if debugStartTime == 0 then debugStartTime = now end
+    debugLines[#debugLines + 1] = ("[%06.3f] %s"):format(now - debugStartTime, tostring(msg))
+    if #debugLines > 200 then
+        table.remove(debugLines, 1)
+    end
+    RefreshDebugWindow()
+end
+
+local function GetOrCreateDebugWindow()
+    if debugFrame then return debugFrame end
+
+    local f = CreateFrame("Frame", "SwingClockDebugFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    f:SetSize(440, 280)
+    f:SetPoint("CENTER", UIParent, "CENTER", 260, 0)
+    f:SetFrameStrata("DIALOG")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:SetClampedToScreen(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    if f.SetBackdrop then
+        f:SetBackdrop({
+            bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            tile = true, tileSize = 16, edgeSize = 14,
+            insets = { left = 3, right = 3, top = 3, bottom = 3 },
+        })
+        f:SetBackdropColor(0.05, 0.05, 0.07, 0.92)
+        f:SetBackdropBorderColor(0.65, 0.52, 0.25, 1)
+    end
+
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -10)
+    title:SetText("SwingClock Debug Log")
+
+    local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2, -2)
+    closeBtn:SetScript("OnClick", function()
+        debugMode = false
+        f:Hide()
+    end)
+
+    local selectBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    selectBtn:SetSize(82, 20)
+    selectBtn:SetPoint("TOPRIGHT", closeBtn, "TOPLEFT", -4, -4)
+    selectBtn:SetText("Select All")
+    selectBtn:SetScript("OnClick", function()
+        if f.editBox then
+            f.editBox:SetFocus()
+            f.editBox:HighlightText()
+        end
+    end)
+
+    local clearBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    clearBtn:SetSize(64, 20)
+    clearBtn:SetPoint("RIGHT", selectBtn, "LEFT", -6, 0)
+    clearBtn:SetText("Clear")
+    clearBtn:SetScript("OnClick", function()
+        wipe(debugLines)
+        debugStartTime = GetTime()
+        RefreshDebugWindow()
+    end)
+
+    local scroll = CreateFrame("ScrollFrame", "SwingClockDebugScrollFrame", f, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -34)
+    scroll:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -28, 10)
+    f.scrollFrame = scroll
+
+    local eb = CreateFrame("EditBox", nil, scroll)
+    eb:SetMultiLine(true)
+    eb:SetAutoFocus(false)
+    eb:SetFontObject(ChatFontNormal)
+    eb:SetWidth(395)
+    eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    eb:SetScript("OnTextChanged", function()
+        scroll:UpdateScrollChildRect()
+    end)
+    scroll:SetScrollChild(eb)
+    f.editBox = eb
+
+    debugFrame = f
+    return f
+end
 
 local function FallbackIconForAura(name, spellID)
     if spellID then
@@ -2178,7 +2280,7 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
                 local now = GetTime()
                 lastMHSwingTime = now
                 if debugMode then
-                    Print(("DEBUG PLAYER_SWING MH (hsDelta=%.0fms, avoidDelta=%.0fms)"):format((now - lastHolyStrikeTime) * 1000, (now - lastTargetAvoidTime) * 1000))
+                    DebugLog(("PLAYER_SWING MH (hsDelta=%.0fms, avoidDelta=%.0fms)"):format((now - lastHolyStrikeTime) * 1000, (now - lastTargetAvoidTime) * 1000))
                 end
                 if (now - lastHolyStrikeTime) >= 0.35 and (now - lastTargetAvoidTime) >= 0.20 then
                     pendingEchoSwingToken = pendingEchoSwingToken + 1
@@ -2188,13 +2290,13 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
                         -- target MISS/PARRY/DODGE (UNIT_COMBAT) cancels this swing before it updates Echo stacks
                         C_Timer.After(0.15, function()
                             if pendingEchoSwingToken == myToken then
-                                if debugMode then
-                                    Print("DEBUG ApplyCombatEchoSwingHit() -> stacks=" .. tostring(echoState.stacks))
-                                end
                                 ApplyCombatEchoSwingHit()
+                                if debugMode then
+                                    DebugLog(("ApplyCombatEchoSwingHit -> echo=%s stacks=%d"):format(tostring(echoState.active), echoState.stacks or 0))
+                                end
                                 RefreshPaladinAuras()
                             elseif debugMode then
-                                Print("DEBUG MH swing cancelled before 150ms commit")
+                                DebugLog("MH swing cancelled before 150ms commit")
                             end
                         end)
                     else
@@ -2248,12 +2350,12 @@ function handlers.UNIT_COMBAT(unit, action)
     if not db or not db.enabled then return end
     if IsSecret(unit) or IsSecret(action) then
         if debugMode then
-            Print(("DEBUG UNIT_COMBAT SECRET (unitSecret=%s, actionSecret=%s)"):format(tostring(IsSecret(unit)), tostring(IsSecret(action))))
+            DebugLog(("UNIT_COMBAT SECRET (unitSecret=%s, actionSecret=%s)"):format(tostring(IsSecret(unit)), tostring(IsSecret(action))))
         end
         return
     end
     if debugMode and (unit == "target" or unit == "player") then
-        Print(("DEBUG UNIT_COMBAT unit=%s action=%s (+%.0fms from MH)"):format(tostring(unit), tostring(action), (GetTime() - lastMHSwingTime) * 1000))
+        DebugLog(("UNIT_COMBAT unit=%s action=%s (+%.0fms from MH)"):format(tostring(unit), tostring(action), (GetTime() - lastMHSwingTime) * 1000))
     end
 
     if isPaladinClass and unit == "target" then
@@ -3244,6 +3346,14 @@ SlashCmdList.SWINGCLOCK = function(msg)
         Print("Center countdown text " .. TagOnOff(db.showText))
     elseif cmd == "debug" then
         debugMode = not debugMode
+        local win = GetOrCreateDebugWindow()
+        if debugMode then
+            if #debugLines == 0 then debugStartTime = GetTime() end
+            RefreshDebugWindow()
+            win:Show()
+        else
+            win:Hide()
+        end
         Print("Debug logging " .. TagOnOff(debugMode))
     elseif cmd == "toggle" then
         db.enabled = not db.enabled
