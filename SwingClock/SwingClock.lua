@@ -1449,6 +1449,16 @@ local function BuildNativePaladinAuras()
                     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
                     button:SetIcon(icon)
 
+                    local cd = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
+                    cd:SetAllPoints(icon)
+                    cd:SetFrameLevel(sb:GetFrameLevel() + 3)
+                    cd:SetReverse(false)
+                    if cd.SetDrawEdge then cd:SetDrawEdge(true) end
+                    if cd.SetDrawBling then cd:SetDrawBling(false) end
+                    if cd.SetHideCountdownNumbers then cd:SetHideCountdownNumbers(true) end
+                    if cd.SetSwipeColor then cd:SetSwipeColor(0, 0, 0, 0.52) end
+                    pcall(button.SetDurationCooldown, button, cd)
+
                     local overlay = CreateFrame("Frame", nil, button)
                     overlay:SetAllPoints(sb)
                     overlay:SetFrameLevel(sb:GetFrameLevel() + 5)
@@ -1583,14 +1593,21 @@ UpdatePaladinUI = function()
         if sb.nativeWrap then sb.nativeWrap:SetAlpha(useNative and 1 or 0) end
         if useNative then
             sb.iconTex:Hide()
+            if sb.cooldown then sb.cooldown:Clear() end
             sb.timerText:SetText("")
         else
             if sealState.active and sealState.icon then
                 sb.iconTex:SetTexture(sealState.icon)
                 sb.iconTex:SetVertexColor(1, 1, 1, 1)
                 sb.iconTex:Show()
+                if sb.cooldown and sealState.duration and sealState.duration > 0 and sealState.expirationTime and sealState.expirationTime > 0 then
+                    sb.cooldown:SetCooldown(sealState.expirationTime - sealState.duration, sealState.duration)
+                elseif sb.cooldown then
+                    sb.cooldown:Clear()
+                end
             else
                 sb.iconTex:Hide()
+                if sb.cooldown then sb.cooldown:Clear() end
             end
             UpdateSealTimerText(GetTime())
         end
@@ -1928,6 +1945,7 @@ local function ApplyClockLayout()
         sb:SetPoint("RIGHT", clockFrame, "LEFT", -boxGap, 0)
         sb.bgTex:SetSize(innerBoxSz, innerBoxSz)
         sb.iconTex:SetSize(innerBoxSz, innerBoxSz)
+        if sb.cooldown then sb.cooldown:SetSize(innerBoxSz, innerBoxSz) end
     end
 
     if clockFrame.echoBox then
@@ -2381,6 +2399,16 @@ local function CreateClockFrame()
     sbIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     sbIcon:Hide()
     sealBox.iconTex = sbIcon
+
+    local sbCD = CreateFrame("Cooldown", nil, sealBox, "CooldownFrameTemplate")
+    sbCD:SetPoint("CENTER", sealBox, "CENTER", 0, 0)
+    sbCD:SetFrameLevel(baseLevel + 3)
+    sbCD:SetReverse(false)
+    if sbCD.SetDrawEdge then sbCD:SetDrawEdge(true) end
+    if sbCD.SetDrawBling then sbCD:SetDrawBling(false) end
+    if sbCD.SetHideCountdownNumbers then sbCD:SetHideCountdownNumbers(true) end
+    if sbCD.SetSwipeColor then sbCD:SetSwipeColor(0, 0, 0, 0.52) end
+    sealBox.cooldown = sbCD
 
     local sbNativeWrap = CreateFrame("Frame", nil, sealBox)
     sbNativeWrap:SetAllPoints(sealBox)
