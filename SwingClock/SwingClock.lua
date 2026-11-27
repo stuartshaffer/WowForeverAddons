@@ -27,6 +27,7 @@ local TEX_PULSE       = TEX_DIR .. "PulseGlow"
 local TEX_PIP         = TEX_DIR .. "Pip"
 local TEX_SEAL_BOX    = TEX_DIR .. "SealBoxBezel"
 local TEX_PIP_RING    = TEX_DIR .. "PipRing"
+local TEX_SAD_FACE    = TEX_DIR .. "SadFace"
 
 local SWING_MH, SWING_OH, SWING_RANGED = 0, 1, 2
 
@@ -159,6 +160,12 @@ local mhState = { active = false, startTime = 0, duration = 0, speed = 0, pulseT
 local ohState = { active = false, startTime = 0, duration = 0, speed = 0, pulseTime = -1 }
 local sealState = { active = false, icon = nil, duration = 0, expirationTime = 0, spellID = nil, auraInstanceID = nil }
 local echoState = { active = false, icon = nil, stacks = 0, duration = 0, expirationTime = 0, spellID = nil, auraInstanceID = nil }
+local echoProcTracker = { active = false, key = nil, icon = nil, stacks = 0 }
+local activeConsumedEcho = nil
+local echoProcWindowToken = 0
+local recentCommandProcTime = 0
+local recentCommandProcCount = 0
+local JUSTICE_PROC_SPELL_IDS = { [20170] = true }
 
 local function Print(msg)
     print("|cff33ff66SwingClock|r: " .. tostring(msg))
@@ -441,6 +448,85 @@ end
 local function MarkHolyStrikeCast()
     lastHolyStrikeTime = GetTime()
     pendingEchoSwingToken = pendingEchoSwingToken + 1
+end
+
+local function SealKeyFromIcon(icon)
+    if not icon then return nil end
+    for key, tex in pairs(SEAL_NAME_ICONS) do
+        if tex == icon then
+            if key == "crusader" then return "fury" end
+            return key
+        end
+    end
+    return nil
+end
+
+local function ShowEchoProcResult(procCount, sealIcon)
+    if not clockFrame or not clockFrame.echoBox or not clockFrame.echoBox:IsShown() then return end
+    local eb = clockFrame.echoBox
+    if eb.procIcons then
+        for i = 1, MAX_ECHO_STACKS do
+            local pf = eb.procIcons[i]
+            if pf then
+                if pf.anim and pf.anim:IsPlaying() then pf.anim:Stop() end
+                if procCount and procCount > 0 and i <= procCount and sealIcon then
+                    pf.iconTex:SetTexture(sealIcon)
+                    pf:Show()
+                    if pf.anim then pf.anim:Play() end
+                else
+                    pf:Hide()
+                end
+            end
+        end
+    end
+    if eb.sadFace then
+        local sf = eb.sadFace
+        if sf.anim and sf.anim:IsPlaying() then sf.anim:Stop() end
+        if not procCount or procCount <= 0 then
+            sf:Show()
+            if sf.anim then sf.anim:Play() end
+        else
+            sf:Hide()
+        end
+    end
+end
+
+local function OpenEchoProcWindow(consumedIcon, consumedStacks, swingTime)
+    local key = SealKeyFromIcon(consumedIcon)
+    if not key or not consumedStacks or consumedStacks <= 0 then return end
+
+    echoProcWindowToken = echoProcWindowToken + 1
+    local myToken = echoProcWindowToken
+
+    if key == "righteousness" or key == "fury" then
+        ShowEchoProcResult(Clamp(consumedStacks, 1, MAX_ECHO_STACKS), consumedIcon)
+        return
+    end
+
+    local initialProcs = 0
+    if key == "command" and recentCommandProcCount and recentCommandProcTime and (GetTime() - recentCommandProcTime) <= 0.25 then
+        initialProcs = Clamp(recentCommandProcCount, 0, consumedStacks)
+    end
+
+    activeConsumedEcho = {
+        key = key,
+        icon = consumedIcon,
+        stacks = consumedStacks,
+        procs = initialProcs,
+        token = myToken,
+    }
+
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0.18, function()
+            if echoProcWindowToken ~= myToken or not activeConsumedEcho then return end
+            local c = activeConsumedEcho
+            activeConsumedEcho = nil
+            ShowEchoProcResult(Clamp(c.procs or 0, 0, c.stacks), c.icon)
+        end)
+    else
+        activeConsumedEcho = nil
+        ShowEchoProcResult(initialProcs, consumedIcon)
+    end
 end
 
 -- Applies a landed white MH swing to Unsealed Wrath Echo stacks in combat when C_UnitAuras is secret.
@@ -1974,6 +2060,25 @@ local function ApplyClockLayout()
                 pip.fillTex:SetSize(pipFillSz, pipFillSz)
             end
         end
+
+        local procIconSz = Clamp(math.floor(pipOrbSz * 0.90 + 0.5), 12, 46)
+        local procInnerSz = math.max(8, math.floor(procIconSz * 0.80 + 0.5))
+        if eb.procIcons then
+            for i = 1, MAX_ECHO_STACKS do
+                local pf = eb.procIcons[i]
+                if pf and eb.pips[i] then
+                    pf:SetSize(procIconSz, procIconSz)
+                    pf:ClearAllPoints()
+                    pf:SetPoint("LEFT", eb.pips[i], "RIGHT", 4, 0)
+                    pf.iconTex:SetSize(procInnerSz, procInnerSz)
+                end
+            end
+        end
+        if eb.sadFace and eb.pips[2] then
+            eb.sadFace:SetSize(procIconSz, procIconSz)
+            eb.sadFace:ClearAllPoints()
+            eb.sadFace:SetPoint("LEFT", eb.pips[2], "RIGHT", 4, 0)
+        end
     end
 
     if clockFrame.shieldBox then
@@ -2515,6 +2620,62 @@ local function CreateClockFrame()
         echoBox.pips[i] = pip
     end
 
+    local function CreateFadeAnim(frame, holdSec)
+        local ag = frame:CreateAnimationGroup()
+        local fadeIn = ag:CreateAnimation("Alpha")
+        fadeIn:SetFromAlpha(0)
+        fadeIn:SetToAlpha(1)
+        fadeIn:SetDuration(0.10)
+        fadeIn:SetOrder(1)
+
+        local fadeOut = ag:CreateAnimation("Alpha")
+        fadeOut:SetFromAlpha(1)
+        fadeOut:SetToAlpha(0)
+        fadeOut:SetDuration(0.45)
+        fadeOut:SetStartDelay(holdSec or 1.35)
+        fadeOut:SetOrder(2)
+
+        ag:SetScript("OnFinished", function()
+            frame:Hide()
+        end)
+        return ag
+    end
+
+    echoBox.procIcons = {}
+    for i = 1, MAX_ECHO_STACKS do
+        local pf = CreateFrame("Frame", nil, echoBox)
+        pf:SetFrameLevel(baseLevel + 8)
+        pf:EnableMouse(false)
+
+        local pfBg = pf:CreateTexture(nil, "BACKGROUND", nil, 0)
+        pfBg:SetAllPoints(pf)
+        SetSolidLineColor(pfBg, 0.08, 0.06, 0.04, 0.92)
+
+        local pfIcon = pf:CreateTexture(nil, "ARTWORK", nil, 0)
+        pfIcon:SetPoint("CENTER", pf, "CENTER", 0, 0)
+        pfIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        pf.iconTex = pfIcon
+
+        local pfBezel = pf:CreateTexture(nil, "OVERLAY", nil, 1)
+        pfBezel:SetAllPoints(pf)
+        pfBezel:SetTexture(TEX_SEAL_BOX)
+
+        pf.anim = CreateFadeAnim(pf, 1.35)
+        pf:Hide()
+        echoBox.procIcons[i] = pf
+    end
+
+    local sf = CreateFrame("Frame", nil, echoBox)
+    sf:SetFrameLevel(baseLevel + 8)
+    sf:EnableMouse(false)
+    local sfTex = sf:CreateTexture(nil, "ARTWORK", nil, 0)
+    sfTex:SetAllPoints(sf)
+    sfTex:SetTexture(TEX_SAD_FACE)
+    sf.iconTex = sfTex
+    sf.anim = CreateFadeAnim(sf, 1.35)
+    sf:Hide()
+    echoBox.sadFace = sf
+
     echoBox:Hide()
     f.echoBox = echoBox
 
@@ -2822,7 +2983,7 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
         end
         StartSwing(slot, dur, true)
 
-        if isPaladinClass and hasUnsealedWrath and not testPaladinPreview and not HasNativeAuraContainer() then
+        if isPaladinClass and hasUnsealedWrath and not testPaladinPreview then
             if slot == SWING_MH then
                 local now = GetTime()
                 lastMHSwingTime = now
@@ -2844,21 +3005,37 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
                                     end
                                     return
                                 end
+                                local prevActive = echoState.active
+                                local prevIcon = echoState.icon
+                                local prevStacks = echoState.stacks or 0
                                 ApplyCombatEchoSwingHit()
+                                if prevActive and prevStacks > 0 and (not sealState.active or sealState.icon ~= prevIcon) then
+                                    OpenEchoProcWindow(prevIcon, prevStacks, lastMHSwingTime)
+                                end
                                 if debugMode then
                                     DebugLog(("ApplyCombatEchoSwingHit -> echo=%s stacks=%d"):format(tostring(echoState.active), echoState.stacks or 0))
                                 end
-                                RefreshPaladinAuras()
+                                if not HasNativeAuraContainer() then
+                                    RefreshPaladinAuras()
+                                end
                             elseif debugMode then
                                 DebugLog("MH swing cancelled before 150ms commit")
                             end
                         end)
                     else
+                        local prevActive = echoState.active
+                        local prevIcon = echoState.icon
+                        local prevStacks = echoState.stacks or 0
                         ApplyCombatEchoSwingHit()
+                        if prevActive and prevStacks > 0 and (not sealState.active or sealState.icon ~= prevIcon) then
+                            OpenEchoProcWindow(prevIcon, prevStacks, lastMHSwingTime)
+                        end
                     end
                 end
             end
-            RefreshPaladinAuras()
+            if not HasNativeAuraContainer() then
+                RefreshPaladinAuras()
+            end
         end
     end
 end
@@ -2947,6 +3124,9 @@ end
 function handlers.UNIT_POWER_UPDATE(unit, powerType)
     if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
     if not IsSecret(powerType) and powerType ~= "MANA" then return end
+    if activeConsumedEcho and activeConsumedEcho.key == "wisdom" then
+        activeConsumedEcho.procs = math.min(activeConsumedEcho.stacks, (activeConsumedEcho.procs or 0) + 1)
+    end
     if pendingManaSnapshot == nil then return end
     if UnitPower then
         local okP, curP = pcall(UnitPower, "player", 0)
@@ -2973,6 +3153,12 @@ function handlers.UNIT_COMBAT(unit, action, descriptor)
     local safeDesc = (not IsSecret(descriptor) and type(descriptor) == "string") and descriptor or ""
     if debugMode and (unit == "target" or unit == "player") then
         DebugLog(("UNIT_COMBAT unit=%s action=%s desc=%s (+%.0fms from MH)"):format(tostring(unit), tostring(action), safeDesc, (GetTime() - lastMHSwingTime) * 1000))
+    end
+
+    if isPaladinClass and unit == "player" and action == "HEAL" then
+        if activeConsumedEcho and activeConsumedEcho.key == "light" then
+            activeConsumedEcho.procs = math.min(activeConsumedEcho.stacks, (activeConsumedEcho.procs or 0) + 1)
+        end
     end
 
     if isPaladinClass and unit == "player" and (action == "BLOCK" or safeDesc == "BLOCK") then
@@ -3094,7 +3280,22 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
             -- even if the proc itself is parried/missed, the white swing itself landed.
             lastTargetWoundTime = now
             lastMHSwingWoundSeen = true
+            if (now - (recentCommandProcTime or 0)) <= 0.25 then
+                recentCommandProcCount = (recentCommandProcCount or 0) + 1
+            else
+                recentCommandProcCount = 1
+            end
+            recentCommandProcTime = now
+            if activeConsumedEcho and activeConsumedEcho.key == "command" then
+                activeConsumedEcho.procs = math.min(activeConsumedEcho.stacks, (activeConsumedEcho.procs or 0) + 1)
+            end
             if debugMode then DebugLog(("SPELLCAST SealProc (%d) -> swing landed"):format(spellID)) end
+            return
+        end
+        if JUSTICE_PROC_SPELL_IDS[spellID] then
+            if activeConsumedEcho and activeConsumedEcho.key == "justice" then
+                activeConsumedEcho.procs = math.min(activeConsumedEcho.stacks, (activeConsumedEcho.procs or 0) + 1)
+            end
             return
         end
         if IsHolyStrikeSpell(spellID, nil) then
