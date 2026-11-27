@@ -2961,8 +2961,8 @@ function handlers.UNIT_POWER_UPDATE(unit, powerType)
     end
 end
 
--- Classic / Forever Parry Haste + Target Miss/Parry/Dodge cancellation for Unsealed Wrath
-function handlers.UNIT_COMBAT(unit, action)
+-- Classic / Forever Parry Haste + Target Miss/Parry/Dodge cancellation + Player Block (full or partial)
+function handlers.UNIT_COMBAT(unit, action, descriptor)
     if not db or not db.enabled then return end
     if IsSecret(unit) or IsSecret(action) then
         if debugMode then
@@ -2970,11 +2970,12 @@ function handlers.UNIT_COMBAT(unit, action)
         end
         return
     end
+    local safeDesc = (not IsSecret(descriptor) and type(descriptor) == "string") and descriptor or ""
     if debugMode and (unit == "target" or unit == "player") then
-        DebugLog(("UNIT_COMBAT unit=%s action=%s (+%.0fms from MH)"):format(tostring(unit), tostring(action), (GetTime() - lastMHSwingTime) * 1000))
+        DebugLog(("UNIT_COMBAT unit=%s action=%s desc=%s (+%.0fms from MH)"):format(tostring(unit), tostring(action), safeDesc, (GetTime() - lastMHSwingTime) * 1000))
     end
 
-    if isPaladinClass and unit == "player" and action == "BLOCK" then
+    if isPaladinClass and unit == "player" and (action == "BLOCK" or safeDesc == "BLOCK") then
         if hasShieldSpecialization then
             local now = GetTime()
             if now >= (shieldSpecCDStart + SHIELD_SPEC_ICD) then
