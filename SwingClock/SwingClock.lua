@@ -2558,16 +2558,17 @@ local function CreateClockFrame()
     shTimer:SetText("Ready")
     shieldBox.timerText = shTimer
 
-    -- Pooled floating combat text next to shieldBox for mana refilled
+    -- Pooled floating combat text next to shieldBox for mana refilled (2x size)
     shieldBox.manaPopups = {}
     for i = 1, 3 do
         local pf = CreateFrame("Frame", nil, shieldBox)
-        pf:SetSize(80, 20)
-        pf:SetPoint("LEFT", shieldBox, "RIGHT", 6, 0)
+        pf:SetSize(120, 28)
+        pf:SetPoint("LEFT", shieldBox, "RIGHT", 8, 0)
         pf:SetFrameLevel(baseLevel + 8)
         pf:Hide()
 
-        local fs = pf:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        local fs = pf:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+        fs:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 20, "OUTLINE")
         fs:SetPoint("LEFT", pf, "LEFT", 0, 0)
         fs:SetJustifyH("LEFT")
         fs:SetTextColor(0.35, 0.78, 1.0, 1)
