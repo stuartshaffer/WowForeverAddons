@@ -165,6 +165,12 @@ local activeConsumedEcho = nil
 local echoProcWindowToken = 0
 local recentCommandProcTime = 0
 local recentCommandProcCount = 0
+local recentHealProcTime = 0
+local recentHealProcCount = 0
+local recentManaProcTime = 0
+local recentManaProcCount = 0
+local recentJusticeProcTime = 0
+local recentJusticeProcCount = 0
 local JUSTICE_PROC_SPELL_IDS = { [20170] = true }
 
 local function Print(msg)
@@ -450,12 +456,27 @@ local function MarkHolyStrikeCast()
     pendingEchoSwingToken = pendingEchoSwingToken + 1
 end
 
-local function SealKeyFromIcon(icon)
-    if not icon then return nil end
-    for key, tex in pairs(SEAL_NAME_ICONS) do
-        if tex == icon then
-            if key == "crusader" then return "fury" end
-            return key
+local function SealKeyFromIcon(icon, spellID)
+    if spellID and not IsSecret(spellID) and type(spellID) == "number" then
+        if C_Spell and C_Spell.GetSpellName then
+            local okN, n = pcall(C_Spell.GetSpellName, spellID)
+            if okN and not IsSecret(n) and type(n) == "string" then
+                local low = n:lower()
+                for key in pairs(SEAL_NAME_ICONS) do
+                    if low:find(key, 1, true) then
+                        if key == "crusader" then return "fury" end
+                        return key
+                    end
+                end
+            end
+        end
+    end
+    if icon then
+        for key, tex in pairs(SEAL_NAME_ICONS) do
+            if tex == icon then
+                if key == "crusader" then return "fury" end
+                return key
+            end
         end
     end
     return nil
@@ -491,8 +512,11 @@ local function ShowEchoProcResult(procCount, sealIcon)
     end
 end
 
-local function OpenEchoProcWindow(consumedIcon, consumedStacks, swingTime)
-    local key = SealKeyFromIcon(consumedIcon)
+local function OpenEchoProcWindow(consumedIcon, consumedStacks, swingTime, consumedSpellID)
+    local key = SealKeyFromIcon(consumedIcon, consumedSpellID)
+    if debugMode then
+        DebugLog(("OpenEchoProcWindow key=%s stacks=%s icon=%s"):format(tostring(key), tostring(consumedStacks), tostring(consumedIcon)))
+    end
     if not key or not consumedStacks or consumedStacks <= 0 then return end
 
     echoProcWindowToken = echoProcWindowToken + 1
@@ -503,9 +527,16 @@ local function OpenEchoProcWindow(consumedIcon, consumedStacks, swingTime)
         return
     end
 
+    local now = GetTime()
     local initialProcs = 0
-    if key == "command" and recentCommandProcCount and recentCommandProcTime and (GetTime() - recentCommandProcTime) <= 0.25 then
+    if key == "command" and recentCommandProcCount > 0 and (now - recentCommandProcTime) <= 0.30 then
         initialProcs = Clamp(recentCommandProcCount, 0, consumedStacks)
+    elseif key == "light" and recentHealProcCount > 0 and (now - recentHealProcTime) <= 0.30 then
+        initialProcs = Clamp(recentHealProcCount, 0, consumedStacks)
+    elseif key == "wisdom" and recentManaProcCount > 0 and (now - recentManaProcTime) <= 0.30 then
+        initialProcs = Clamp(recentManaProcCount, 0, consumedStacks)
+    elseif key == "justice" and recentJusticeProcCount > 0 and (now - recentJusticeProcTime) <= 0.30 then
+        initialProcs = Clamp(recentJusticeProcCount, 0, consumedStacks)
     end
 
     activeConsumedEcho = {
@@ -521,6 +552,9 @@ local function OpenEchoProcWindow(consumedIcon, consumedStacks, swingTime)
             if echoProcWindowToken ~= myToken or not activeConsumedEcho then return end
             local c = activeConsumedEcho
             activeConsumedEcho = nil
+            if debugMode then
+                DebugLog(("EchoProcResult key=%s procs=%d/%d"):format(tostring(c.key), c.procs or 0, c.stacks or 0))
+            end
             ShowEchoProcResult(Clamp(c.procs or 0, 0, c.stacks), c.icon)
         end)
     else
@@ -3008,9 +3042,10 @@ function handlers.PLAYER_SWING(swingDuration, swingType)
                                 local prevActive = echoState.active
                                 local prevIcon = echoState.icon
                                 local prevStacks = echoState.stacks or 0
+                                local prevSpellID = echoState.spellID
                                 ApplyCombatEchoSwingHit()
                                 if prevActive and prevStacks > 0 and (not sealState.active or sealState.icon ~= prevIcon) then
-                                    OpenEchoProcWindow(prevIcon, prevStacks, lastMHSwingTime)
+                                    OpenEchoProcWindow(prevIcon, prevStacks, lastMHSwingTime, prevSpellID)
                                 end
                                 if debugMode then
                                     DebugLog(("ApplyCombatEchoSwingHit -> echo=%s stacks=%d"):format(tostring(echoState.active), echoState.stacks or 0))
@@ -3124,6 +3159,13 @@ end
 function handlers.UNIT_POWER_UPDATE(unit, powerType)
     if not isPaladinClass or IsSecret(unit) or unit ~= "player" then return end
     if not IsSecret(powerType) and powerType ~= "MANA" then return end
+    local now = GetTime()
+    if (now - recentManaProcTime) <= 0.25 then
+        recentManaProcCount = recentManaProcCount + 1
+    else
+        recentManaProcCount = 1
+    end
+    recentManaProcTime = now
     if activeConsumedEcho and activeConsumedEcho.key == "wisdom" then
         activeConsumedEcho.procs = math.min(activeConsumedEcho.stacks, (activeConsumedEcho.procs or 0) + 1)
     end
@@ -3156,6 +3198,13 @@ function handlers.UNIT_COMBAT(unit, action, descriptor)
     end
 
     if isPaladinClass and unit == "player" and action == "HEAL" then
+        local now = GetTime()
+        if (now - recentHealProcTime) <= 0.25 then
+            recentHealProcCount = recentHealProcCount + 1
+        else
+            recentHealProcCount = 1
+        end
+        recentHealProcTime = now
         if activeConsumedEcho and activeConsumedEcho.key == "light" then
             activeConsumedEcho.procs = math.min(activeConsumedEcho.stacks, (activeConsumedEcho.procs or 0) + 1)
         end
@@ -3293,6 +3342,12 @@ function handlers.UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
             return
         end
         if JUSTICE_PROC_SPELL_IDS[spellID] then
+            if (now - recentJusticeProcTime) <= 0.25 then
+                recentJusticeProcCount = recentJusticeProcCount + 1
+            else
+                recentJusticeProcCount = 1
+            end
+            recentJusticeProcTime = now
             if activeConsumedEcho and activeConsumedEcho.key == "justice" then
                 activeConsumedEcho.procs = math.min(activeConsumedEcho.stacks, (activeConsumedEcho.procs or 0) + 1)
             end
